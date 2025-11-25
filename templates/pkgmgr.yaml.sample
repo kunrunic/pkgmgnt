@@ -1,0 +1,14 @@
+version: 1
+pkg_release_root: ~/PKG/RELEASE
+sources:
+  - /path/to/source-A
+  - /path/to/source-B
+install:
+  targets: [bin, lib, data]
+  exclude: [log, tmp, cache]
+watch:
+  interval_sec: 60
+git:
+  keywords: ["FIX", "BUG", "SECURITY"]
+collectors:
+  enabled: ["checksums"]

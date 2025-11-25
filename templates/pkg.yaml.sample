@@ -1,0 +1,14 @@
+pkg:
+  id: "<pkg-id>"
+  root: "/path/to/release/<pkg-id>"
+  status: "open"
+include:
+  sources: ["relative/path/from/source/root"]
+  install: ["bin", "lib", "data"]
+  pkg_dir: ["docs", "notes"]
+git:
+  keywords: ["BUG", "FEATURE"]
+  since: null
+  until: null
+collectors:
+  enabled: ["checksums"]
