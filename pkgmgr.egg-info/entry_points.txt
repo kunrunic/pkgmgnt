@@ -1,0 +1,2 @@
+[console_scripts]
+pkgmgr = pkgmgr.cli:main

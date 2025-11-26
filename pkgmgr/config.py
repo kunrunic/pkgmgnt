@@ -4,6 +4,14 @@ from __future__ import print_function
 import os
 import textwrap
 
+# Default locations under the user's home directory.
+BASE_DIR = os.path.expanduser("~/pkmgr")
+DEFAULT_CONFIG_DIR = os.path.join(BASE_DIR, "config")
+DEFAULT_STATE_DIR = os.path.join(BASE_DIR, "local", "state")
+DEFAULT_CACHE_DIR = os.path.join(BASE_DIR, "cache")
+DEFAULT_MAIN_CONFIG = os.path.join(DEFAULT_CONFIG_DIR, "pkgmgr.yaml")
+
+
 try:
     import yaml  # type: ignore
 except Exception:
@@ -53,8 +61,9 @@ collectors:
 """
 
 
-def write_template(path):
+def write_template(path=None):
     """Write the main pkgmgr.yaml template."""
+    path = path or DEFAULT_MAIN_CONFIG
     target = os.path.abspath(path)
     parent = os.path.dirname(target)
     if parent and not os.path.exists(parent):
@@ -75,11 +84,12 @@ def write_pkg_template(path):
     print("[create-pkg] wrote pkg template to %s" % target)
 
 
-def load_main(path):
+def load_main(path=None):
     """
     Load main config YAML. For now this is a thin wrapper; will grow validation.
     If PyYAML is missing, raise a clear error so installation can add it.
     """
+    path = path or DEFAULT_MAIN_CONFIG
     if yaml is None:
         raise RuntimeError(
             "PyYAML not installed; install it or keep using templates manually"

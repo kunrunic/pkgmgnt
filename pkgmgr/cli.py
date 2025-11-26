@@ -16,7 +16,7 @@ def _add_make_config(sub):
     p.add_argument(
         "-o",
         "--output",
-        default="pkgmgr.yaml",
+        default=config.DEFAULT_MAIN_CONFIG,
         help="path to write the main config (default: %(default)s)",
     )
     p.set_defaults(func=_handle_make_config)
@@ -31,27 +31,35 @@ def _add_init_snap(sub):
     p = sub.add_parser(
         "init-snap", help="take initial baseline snapshot for sources/install/pkg root"
     )
-    p.add_argument("--config", default="pkgmgr.yaml", help="config file path")
+    p.add_argument(
+        "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
+    )
     p.set_defaults(func=_handle_init_snap)
 
 
 def _add_create_pkg(sub):
     p = sub.add_parser("create-pkg", help="create a pkg folder and template")
     p.add_argument("pkg_id", help="package identifier (e.g. 20240601)")
-    p.add_argument("--config", default="pkgmgr.yaml", help="config file path")
+    p.add_argument(
+        "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
+    )
     p.set_defaults(func=_handle_create_pkg)
 
 
 def _add_close_pkg(sub):
     p = sub.add_parser("close-pkg", help="mark a pkg as closed and stop watching")
     p.add_argument("pkg_id", help="package identifier to close")
-    p.add_argument("--config", default="pkgmgr.yaml", help="config file path")
+    p.add_argument(
+        "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
+    )
     p.set_defaults(func=_handle_close_pkg)
 
 
 def _add_watch(sub):
     p = sub.add_parser("watch", help="start watcher/daemon to monitor pkgs")
-    p.add_argument("--config", default="pkgmgr.yaml", help="config file path")
+    p.add_argument(
+        "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
+    )
     p.add_argument(
         "--once",
         action="store_true",
@@ -69,7 +77,9 @@ def _add_collect(sub):
         dest="collectors",
         help="specific collectors to run (default: all enabled)",
     )
-    p.add_argument("--config", default="pkgmgr.yaml", help="config file path")
+    p.add_argument(
+        "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
+    )
     p.set_defaults(func=_handle_collect)
 
 
@@ -77,7 +87,9 @@ def _add_export(sub):
     p = sub.add_parser("export", help="export pkg data (excel/word/etc)")
     p.add_argument("--pkg", required=True, help="package identifier")
     p.add_argument("--format", choices=["excel", "word", "json"], required=True)
-    p.add_argument("--config", default="pkgmgr.yaml", help="config file path")
+    p.add_argument(
+        "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
+    )
     p.set_defaults(func=_handle_export)
 
 
