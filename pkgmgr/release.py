@@ -3,6 +3,7 @@ from __future__ import print_function
 
 import os
 import sys
+import subprocess
 
 from . import config, snapshot, shell_integration
 
@@ -56,3 +57,59 @@ def collect_for_pkg(cfg, pkg_id, collectors=None):
 def export_pkg(cfg, pkg_id, fmt):
     """Export pkg data placeholder."""
     print("[export] pkg=%s format=%s (stub)" % (pkg_id, fmt))
+
+
+def run_actions(cfg, names):
+    """Run configured actions by name."""
+    actions = cfg.get("actions", {}) or {}
+    if not names:
+        print("[actions] no action names provided")
+        return
+    for name in names:
+        entries = actions.get(name)
+        if not entries:
+            print("[actions] unknown action: %s" % name)
+            continue
+        if isinstance(entries, dict):
+            entries = [entries]
+        if not isinstance(entries, (list, tuple)):
+            print("[actions] invalid action format for %s" % name)
+            continue
+        print("[actions] running %s (%d command(s))" % (name, len(entries)))
+        for idx, entry in enumerate(entries):
+            cmd, cwd, env = _parse_action_entry(entry)
+            if not cmd:
+                print("[actions] skip empty cmd for %s #%d" % (name, idx + 1))
+                continue
+            _run_cmd(cmd, cwd=cwd, env=env, label="%s #%d" % (name, idx + 1))
+
+
+def _parse_action_entry(entry):
+    if isinstance(entry, dict):
+        cmd = entry.get("cmd")
+        cwd = entry.get("cwd")
+        env = entry.get("env")
+        return cmd, cwd, env
+    return entry, None, None
+
+
+def _run_cmd(cmd, cwd=None, env=None, label=None):
+    merged_env = os.environ.copy()
+    if env and isinstance(env, dict):
+        for k, v in env.items():
+            if v is None:
+                continue
+            merged_env[str(k)] = str(v)
+    try:
+        p = subprocess.Popen(cmd, shell=True, cwd=cwd, env=merged_env)
+        rc = p.wait()
+        prefix = "[actions]"
+        tag = " (%s)" % label if label else ""
+        if rc == 0:
+            print("%s command ok%s" % (prefix, tag))
+        else:
+            print("%s command failed%s (rc=%s)" % (prefix, tag, rc))
+    except Exception as e:
+        prefix = "[actions]"
+        tag = " (%s)" % label if label else ""
+        print("%s error%s: %s" % (prefix, tag, str(e)))

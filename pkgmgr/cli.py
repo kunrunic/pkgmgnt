@@ -4,7 +4,7 @@ from __future__ import print_function
 import sys
 
 try:
-    import argparse  # Python 2.6: install argparse package if missing
+    import argparse
 except Exception:
     argparse = None
 
@@ -23,18 +23,26 @@ def _add_make_config(sub):
 
 
 def _add_install(sub):
-    p = sub.add_parser("install", help="install prereqs or prepare environment")
+    p = sub.add_parser("install", help="prepare environment and collect initial baseline")
     p.set_defaults(func=_handle_install)
 
 
-def _add_init_snap(sub):
+def _add_snapshot(sub):
     p = sub.add_parser(
-        "init-snap", help="take initial baseline snapshot for sources/install/pkg root"
+        "snapshot", help="take a snapshot (baseline update after install)"
     )
     p.add_argument(
         "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
     )
-    p.set_defaults(func=_handle_init_snap)
+    p.set_defaults(func=_handle_snapshot)
+
+def _add_actions(sub):
+    p = sub.add_parser("actions", help="run one or more configured actions")
+    p.add_argument("names", nargs="+", help="action names to run")
+    p.add_argument(
+        "--config", default=config.DEFAULT_MAIN_CONFIG, help="config file path"
+    )
+    p.set_defaults(func=_handle_actions)
 
 
 def _add_create_pkg(sub):
@@ -95,18 +103,19 @@ def _add_export(sub):
 
 def build_parser():
     if argparse is None:
-        raise RuntimeError("argparse not available. On Python 2.6 run: pip install argparse")
+        raise RuntimeError("argparse not available; install argparse")
     parser = argparse.ArgumentParser(prog="pkgmgr", description="Pkg manager CLI scaffold")
     sub = parser.add_subparsers(dest="command")
 
     _add_make_config(sub)
     _add_install(sub)
-    _add_init_snap(sub)
+    _add_snapshot(sub)
     _add_create_pkg(sub)
     _add_close_pkg(sub)
     _add_watch(sub)
     _add_collect(sub)
     _add_export(sub)
+    _add_actions(sub)
     return parser
 
 
@@ -116,13 +125,15 @@ def _handle_make_config(args):
 
 
 def _handle_install(args):
+    cfg = config.load_main(config.DEFAULT_MAIN_CONFIG)
     release.ensure_environment()
+    snapshot.create_baseline(cfg)
     return 0
 
 
-def _handle_init_snap(args):
+def _handle_snapshot(args):
     cfg = config.load_main(args.config)
-    snapshot.create_baseline(cfg)
+    snapshot.create_snapshot(cfg)
     return 0
 
 
@@ -153,6 +164,12 @@ def _handle_collect(args):
 def _handle_export(args):
     cfg = config.load_main(args.config)
     release.export_pkg(cfg, args.pkg, args.format)
+    return 0
+
+
+def _handle_actions(args):
+    cfg = config.load_main(args.config)
+    release.run_actions(cfg, args.names)
     return 0
 
 

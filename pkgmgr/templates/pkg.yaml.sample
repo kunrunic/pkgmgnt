@@ -4,7 +4,7 @@ pkg:
   status: "open"
 include:
   sources: ["relative/path/from/source/root"]
-  install: ["bin", "lib", "data"]
+  artifacts: ["bin", "lib", "data"]
   pkg_dir: ["docs", "notes"]
 git:
   keywords: ["BUG", "FEATURE"]

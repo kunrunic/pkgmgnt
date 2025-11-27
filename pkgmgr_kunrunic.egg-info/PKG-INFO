@@ -78,7 +78,7 @@ python -m pkgmgr.cli install
 
 3) 초기 스냅샷 생성  
 ```
-python -m pkgmgr.cli init-snap --config pkgmgr.yaml
+python -m pkgmgr.cli snapshot --config pkgmgr.yaml
 ```
 설정된 소스/설치/릴리스 루트를 기준으로 베이스라인을 기록하도록 확장 예정입니다.
 
@@ -150,7 +150,7 @@ python -m pkgmgr.cli export --pkg <pkg-id> --format excel --config pkgmgr.yaml
 - 아직 핵심 로직(스냅샷/감시/수집/내보내기)은 스텁입니다. 추후 단계적으로 구현/교체 예정입니다.
 
 ## TODO (우선순위)
-- 스냅샷/디프 구현: `pkgmgr/snapshot.py`에 해시/mtime/size 스캔, baseline/latest 저장(`state/...`), diff 작성. CLI `init-snap`/`watch` 연결.
+- 스냅샷/디프 구현: `pkgmgr/snapshot.py`에 해시/mtime/size 스캔, baseline/latest 저장(`state/...`), diff 작성. CLI `snapshot`/`watch` 연결.
 - 설정 스키마 검증: `pkgmgr/config.py` 필수 필드 확인, 기본값 주입, PyYAML 체크, 템플릿 필드 설명 보강.
 - 패키지 라이프사이클: `release.py`에서 `create-pkg` 시 `pkg.yaml` 초기화, `close-pkg` 상태 저장, 상태 파일 표준화.
 - Git 수집: `gitcollect.py`에 키워드/정규식 로그 수집, `state/pkg/<id>/commits.json` 저장, `collect_for_pkg`에서 호출.

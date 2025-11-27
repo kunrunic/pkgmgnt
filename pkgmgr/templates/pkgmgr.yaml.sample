@@ -1,14 +1,39 @@
-version: 1
 pkg_release_root: ~/PKG/RELEASE
 sources:
   - /path/to/source-A
   - /path/to/source-B
-install:
+source:
+  # 소스 스캔 제외 (glob 지원)
+  exclude:
+    - "**/build/**"
+    - "**/*.tmp"
+
+artifacts:
   targets: [bin, lib, data]
-  exclude: [log, tmp, cache]
+  # 배포/설치 영역 제외 (glob/패턴)
+  exclude:
+    - log                # 정확히 log 디렉터리
+    - tmp/**             # tmp 이하 전체
+    - "*.bak"            # 확장자 패턴
+    - "**/*.tmp"         # 모든 하위에서 .tmp
 watch:
   interval_sec: 60
-git:
-  keywords: ["FIX", "BUG", "SECURITY"]
+  on_change: []   # 변경 발생 시 실행할 action 이름 리스트
 collectors:
   enabled: ["checksums"]
+actions:
+  # 각 액션은 하나 이상의 커맨드를 가질 수 있음.
+  # 필드: cmd (필수, 보통 cwd 기준 경로), cwd(선택), env(선택; 이 커맨드에만 적용)
+  export_cksum:
+    - cmd: python cksum_excel.py   # cwd 기준 실행
+      cwd: /app/script             # 선택: 작업 디렉터리
+      env: { APP_ENV: dev }        # 선택: 이 명령에만 적용할 환경변수
+  export_world_dev:
+    - cmd: python dev_world.py
+      cwd: /app/script
+  export_world_security:
+    - cmd: python security_world.py
+      cwd: /app/script
+  noti_email:
+    - cmd: sh noti_email.sh
+      cwd: /app/script
