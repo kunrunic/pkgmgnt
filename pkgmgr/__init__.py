@@ -11,6 +11,7 @@ __all__ = [
     "release",
     "gitcollect",
     "watch",
+    "points",
 ]
 
 __version__ = "0.1.0.dev3"

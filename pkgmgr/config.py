@@ -1,7 +1,9 @@
 from __future__ import print_function
 """Configuration helpers for the pkg manager scaffold."""
 
+import glob
 import os
+import sys
 import textwrap
 
 # Default locations under the user's home directory.
@@ -9,7 +11,9 @@ BASE_DIR = os.path.expanduser("~/pkmgr")
 DEFAULT_CONFIG_DIR = os.path.join(BASE_DIR, "config")
 DEFAULT_STATE_DIR = os.path.join(BASE_DIR, "local", "state")
 DEFAULT_CACHE_DIR = os.path.join(BASE_DIR, "cache")
-DEFAULT_MAIN_CONFIG = os.path.join(DEFAULT_CONFIG_DIR, "pkgmgr.yaml")
+# New default lives directly under BASE_DIR; legacy configs under BASE_DIR/config
+# are still discovered automatically.
+DEFAULT_MAIN_CONFIG = os.path.join(BASE_DIR, "pkgmgr.yaml")
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(HERE, "templates")
 
@@ -84,6 +88,108 @@ collectors:
   enabled: ["checksums"]
 """
 
+MAIN_DEFAULTS = {
+    "pkg_release_root": None,
+    "sources": [],
+    "source": {"exclude": []},
+    "artifacts": {"targets": [], "exclude": []},
+    "watch": {"interval_sec": 60, "on_change": []},
+    "collectors": {"enabled": ["checksums"]},
+    "actions": {},
+}
+
+
+def _deep_merge(defaults, overrides):
+    merged = dict(defaults or {})
+    for key, value in (overrides or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged.get(key, {}), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _ensure_list(value, field):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _ensure_list_of_strings(value, field):
+    raw_list = _ensure_list(value, field)
+    result = []
+    for idx, item in enumerate(raw_list):
+        if item is None:
+            continue
+        if not isinstance(item, (str, bytes, int, float)):
+            raise RuntimeError("expected %s[%d] to be string-like" % (field, idx))
+        result.append(str(item))
+    return result
+
+
+def _validate_actions(actions):
+    if actions is None:
+        return {}
+    if not isinstance(actions, dict):
+        raise RuntimeError("actions must be a mapping of name -> command list")
+    validated = {}
+    for name, entry in actions.items():
+        if isinstance(entry, dict):
+            commands = [entry]
+        elif isinstance(entry, (list, tuple)):
+            commands = list(entry)
+        else:
+            raise RuntimeError("action %s must be a mapping or list" % name)
+        validated[name] = commands
+    return validated
+
+
+def _validate_watch(watch_cfg):
+    watch = watch_cfg if isinstance(watch_cfg, dict) else {}
+    interval = watch.get("interval_sec", MAIN_DEFAULTS["watch"]["interval_sec"])
+    try:
+        interval = int(interval)
+        if interval <= 0:
+            raise ValueError
+    except Exception:
+        interval = MAIN_DEFAULTS["watch"]["interval_sec"]
+    on_change = _ensure_list_of_strings(watch.get("on_change"), "watch.on_change")
+    return {"interval_sec": interval, "on_change": on_change}
+
+
+def _validate_main_config(data):
+    if not isinstance(data, dict):
+        raise RuntimeError("main config must be a mapping")
+    cfg = _deep_merge(MAIN_DEFAULTS, data)
+
+    pkg_root = cfg.get("pkg_release_root")
+    if not pkg_root or not isinstance(pkg_root, (str, bytes)):
+        raise RuntimeError("pkg_release_root is required (path string)")
+    cfg["pkg_release_root"] = str(pkg_root)
+
+    cfg["sources"] = _ensure_list_of_strings(cfg.get("sources"), "sources")
+    src = cfg.get("source") if isinstance(cfg.get("source"), dict) else {}
+    cfg["source"] = {"exclude": _ensure_list_of_strings(src.get("exclude"), "source.exclude")}
+
+    artifacts = cfg.get("artifacts") if isinstance(cfg.get("artifacts"), dict) else {}
+    cfg["artifacts"] = {
+        "targets": _ensure_list_of_strings(artifacts.get("targets"), "artifacts.targets"),
+        "exclude": _ensure_list_of_strings(artifacts.get("exclude"), "artifacts.exclude"),
+    }
+
+    cfg["watch"] = _validate_watch(cfg.get("watch"))
+
+    collectors = cfg.get("collectors") if isinstance(cfg.get("collectors"), dict) else {}
+    cfg["collectors"] = {
+        "enabled": _ensure_list_of_strings(collectors.get("enabled"), "collectors.enabled")
+    }
+
+    cfg["actions"] = _validate_actions(cfg.get("actions"))
+
+    return cfg
+
 
 def _load_template_file(filename, fallback):
     """Try loading a template file under pkgmgr/templates; fallback to inline default."""
@@ -101,7 +207,7 @@ def _load_template_file(filename, fallback):
 def write_template(path=None):
     """Write the main pkgmgr.yaml template."""
     path = path or DEFAULT_MAIN_CONFIG
-    target = os.path.abspath(path)
+    target = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
     parent = os.path.dirname(target)
     if parent and not os.path.exists(parent):
         os.makedirs(parent)
@@ -123,12 +229,85 @@ def write_pkg_template(path):
     print("[create-pkg] wrote pkg template to %s" % target)
 
 
-def load_main(path=None):
+def discover_main_configs(base_dir=None):
     """
-    Load main config YAML. For now this is a thin wrapper; will grow validation.
+    Find pkgmgr config files under the base directory.
+    Search order:
+      - <base_dir>/pkgmgr*.yaml (new default)
+      - <base_dir>/config/pkgmgr*.yaml (legacy default)
+    """
+    base = os.path.abspath(os.path.expanduser(base_dir or BASE_DIR))
+    search_roots = [base, os.path.join(base, "config")]
+    found = []
+    seen = set()
+    patterns = ["pkgmgr*.yaml", "pkgmgr*.yml"]
+    for root in search_roots:
+        if not os.path.isdir(root):
+            continue
+        for pattern in patterns:
+            for path in glob.glob(os.path.join(root, pattern)):
+                apath = os.path.realpath(os.path.abspath(path))
+                if apath not in seen:
+                    seen.add(apath)
+                    found.append(apath)
+    return sorted(found)
+
+
+def _prompt_to_pick(paths):
+    """Interactive selector for multiple configs."""
+    print("[config] multiple pkgmgr configs found; pick one:")
+    for idx, p in enumerate(paths, 1):
+        print("  %d) %s" % (idx, p))
+    choice = None
+    while choice is None:
+        raw = input("Select number (1-%d): " % len(paths)).strip()
+        if not raw:
+            continue
+        try:
+            val = int(raw)
+            if 1 <= val <= len(paths):
+                choice = paths[val - 1]
+            else:
+                print("  invalid selection")
+        except Exception:
+            print("  enter a number")
+    return choice
+
+
+def resolve_main_config(path=None, base_dir=None, allow_interactive=True):
+    """
+    Resolve main config path with discovery and optional interactive choice.
+    - If `path` is provided, return it as-is (expanded/abs).
+    - Otherwise search under BASE_DIR for pkgmgr*.yaml.
+      - none -> instruct user to create or pass --config
+      - one  -> return it
+      - many -> prompt (tty) or raise (non-tty)
+    """
+    if path:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    configs = discover_main_configs(base_dir=base_dir)
+    if not configs:
+        raise RuntimeError(
+            "no pkgmgr config found under %s; run `pkgmgr make-config` "
+            "or pass --config" % os.path.abspath(os.path.expanduser(base_dir or BASE_DIR))
+        )
+    if len(configs) == 1:
+        return configs[0]
+
+    msg = "multiple pkgmgr configs found: %s" % ", ".join(configs)
+    if allow_interactive and sys.stdin.isatty():
+        return _prompt_to_pick(configs)
+    raise RuntimeError(msg + "; specify one with --config")
+
+
+def load_main(path=None, base_dir=None, allow_interactive=True):
+    """
+    Load and validate the main config YAML.
     If PyYAML is missing, raise a clear error so installation can add it.
     """
-    path = path or DEFAULT_MAIN_CONFIG
+    path = resolve_main_config(
+        path=path, base_dir=base_dir, allow_interactive=allow_interactive
+    )
     if yaml is None:
         raise RuntimeError(
             "PyYAML not installed; install it or keep using templates manually"
@@ -138,7 +317,7 @@ def load_main(path=None):
         raise RuntimeError("config not found: %s" % abs_path)
     with open(abs_path, "r") as f:
         data = yaml.safe_load(f) or {}
-    return data
+    return _validate_main_config(data)
 
 
 def describe_expected_fields():
