@@ -2,13 +2,15 @@ pkg:
   id: "<pkg-id>"
   root: "/path/to/release/<pkg-id>"
   status: "open"
+
 include:
-  sources: ["relative/path/from/source/root"]
-  artifacts: ["bin", "lib", "data"]
-  pkg_dir: ["docs", "notes"]
+  releases: []
+
 git:
-  keywords: ["BUG", "FEATURE"]
+  repo_root: null  # optional override; default is git rev-parse from cwd
+  keywords: []
   since: null
   until: null
+
 collectors:
   enabled: ["checksums"]

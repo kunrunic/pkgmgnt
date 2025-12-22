@@ -6,6 +6,7 @@ import hashlib
 import json
 import fnmatch
 import time
+import sys
 
 from . import config
 
@@ -62,10 +63,64 @@ def _scan(root, exclude):
     return res
 
 
-def create_baseline(cfg):
+def _maybe_keep_existing_baseline(path, prompt_overwrite):
+    """
+    When prompt_overwrite=True and baseline exists, ask user (if tty) whether to overwrite.
+    Returns existing data if keeping, else None to continue writing a new baseline.
+    """
+    if not prompt_overwrite:
+        return None
+    if not os.path.exists(path):
+        return None
+
+    if not sys.stdin.isatty():
+        print("[baseline] existing baseline at %s; non-tty -> keeping existing" % path)
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    ans = input("[baseline] existing baseline at %s; overwrite? [y/N]: " % path).strip().lower()
+    if ans not in ("y", "yes"):
+        print("[baseline] keeping existing baseline; skipped overwrite")
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return None
+
+
+def _scan_artifacts(cfg):
+    """
+    Scan artifact roots/targets similar to sources.
+    artifacts.root: base path (optional)
+    artifacts.targets: names or absolute paths
+    artifacts.exclude: patterns
+    """
+    artifacts_cfg = cfg.get("artifacts") or {}
+    art_root = artifacts_cfg.get("root")
+    art_targets = artifacts_cfg.get("targets") or []
+    art_exclude = artifacts_cfg.get("exclude") or []
+
+    result = {}
+    base_root = os.path.abspath(os.path.expanduser(art_root)) if art_root else None
+    for t in art_targets:
+        target_str = str(t)
+        if base_root and not os.path.isabs(target_str):
+            target_path = os.path.join(base_root, target_str)
+        else:
+            target_path = target_str
+        target_path = os.path.abspath(os.path.expanduser(target_path))
+        result[target_path] = _scan(target_path, art_exclude)
+    return result
+
+
+def create_baseline(cfg, prompt_overwrite=False):
     """
     Collect initial baseline snapshot.
-    For now scans sources only; artifacts can be added when roots are available.
+    Scans sources and artifacts (if configured).
     """
     _ensure_state_dir()
     sources = cfg.get("sources", []) or []
@@ -77,12 +132,19 @@ def create_baseline(cfg):
             "type": "baseline",
         },
         "sources": {},
+        "artifacts": {},
     }
 
     for root in sources:
         snapshot_data["sources"][root] = _scan(root, src_exclude)
 
+    snapshot_data["artifacts"] = _scan_artifacts(cfg)
+
     path = os.path.join(STATE_DIR, "baseline.json")
+    existing = _maybe_keep_existing_baseline(path, prompt_overwrite)
+    if existing is not None:
+        return existing
+
     f = open(path, "w")
     try:
         json.dump(snapshot_data, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -106,10 +168,13 @@ def create_snapshot(cfg):
             "type": "snapshot",
         },
         "sources": {},
+        "artifacts": {},
     }
 
     for root in sources:
         snapshot_data["sources"][root] = _scan(root, src_exclude)
+
+    snapshot_data["artifacts"] = _scan_artifacts(cfg)
 
     path = os.path.join(STATE_DIR, "snapshot.json")
     f = open(path, "w")
@@ -139,15 +204,18 @@ def diff_snapshots(base, latest):
                 modified.append(k)
 
     # flatten per-root
-    def _flatten(snap):
+    def _flatten_section(snap, section):
         flat = {}
-        for root, entries in (snap or {}).items():
+        for root, entries in (snap or {}).get(section, {}).items():
             for rel, meta in (entries or {}).items():
                 flat[root + "/" + rel] = meta
         return flat
 
-    a_flat = _flatten(base.get("sources") if base else {})
-    b_flat = _flatten(latest.get("sources") if latest else {})
+    a_flat = {}
+    b_flat = {}
+    for section in ("sources", "artifacts"):
+        a_flat.update(_flatten_section(base or {}, section))
+        b_flat.update(_flatten_section(latest or {}, section))
     _diff_map(a_flat, b_flat)
 
     return {"added": sorted(added), "modified": sorted(modified), "deleted": sorted(deleted)}

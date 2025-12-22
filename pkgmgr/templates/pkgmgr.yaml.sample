@@ -2,13 +2,22 @@ pkg_release_root: ~/PKG/RELEASE
 sources:
   - /path/to/source-A
   - /path/to/source-B
+  
 source:
   # 소스 스캔 제외 (glob 지원)
   exclude:
     - "**/build/**"
     - "**/*.tmp"
+    - "**/bk"
+    - "**/*.sc*"
+    - "**/unit_test/**"
+    - "Jamrules*"
+    - "Jamfile*"
+    - "**/Jamrules*"
+    - "**/Jamfile*"
 
 artifacts:
+  root: ~/HOME
   targets: [bin, lib, data]
   # 배포/설치 영역 제외 (glob/패턴)
   exclude:
@@ -16,11 +25,14 @@ artifacts:
     - tmp/**             # tmp 이하 전체
     - "*.bak"            # 확장자 패턴
     - "**/*.tmp"         # 모든 하위에서 .tmp
+
 watch:
   interval_sec: 60
   on_change: []   # 변경 발생 시 실행할 action 이름 리스트
+
 collectors:
   enabled: ["checksums"]
+
 actions:
   # 각 액션은 하나 이상의 커맨드를 가질 수 있음.
   # 필드: cmd (필수, 보통 cwd 기준 경로), cwd(선택), env(선택; 이 커맨드에만 적용)

@@ -6,6 +6,7 @@ pkgmgr/__main__.py
 pkgmgr/cli.py
 pkgmgr/config.py
 pkgmgr/gitcollect.py
+pkgmgr/points.py
 pkgmgr/release.py
 pkgmgr/shell_integration.py
 pkgmgr/snapshot.py
@@ -22,3 +23,4 @@ pkgmgr_kunrunic.egg-info/entry_points.txt
 pkgmgr_kunrunic.egg-info/not-zip-safe
 pkgmgr_kunrunic.egg-info/requires.txt
 pkgmgr_kunrunic.egg-info/top_level.txt
+tests/test_config.py

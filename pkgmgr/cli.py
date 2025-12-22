@@ -8,7 +8,7 @@ try:
 except Exception:
     argparse = None
 
-from . import config, snapshot, release, gitcollect, watch
+from . import config, snapshot, release, gitcollect, watch, __version__
 
 
 def _add_make_config(sub):
@@ -63,6 +63,17 @@ def _add_create_pkg(sub):
         help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
     )
     p.set_defaults(func=_handle_create_pkg)
+
+
+def _add_update_pkg(sub):
+    p = sub.add_parser("update-pkg", help="collect git keyword hits and checksums for a pkg")
+    p.add_argument("pkg_id", help="package identifier to update")
+    p.add_argument(
+        "--config",
+        default=None,
+        help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
+    )
+    p.set_defaults(func=_handle_update_pkg)
 
 
 def _add_close_pkg(sub):
@@ -156,12 +167,15 @@ def build_parser():
     if argparse is None:
         raise RuntimeError("argparse not available; install argparse")
     parser = argparse.ArgumentParser(prog="pkgmgr", description="Pkg manager CLI scaffold")
+    # keep %(prog)s for argparse's mapping and append package version
+    parser.add_argument("-V", "--version", action="version", version="%(prog)s " + __version__)
     sub = parser.add_subparsers(dest="command")
 
     _add_make_config(sub)
     _add_install(sub)
     _add_snapshot(sub)
     _add_create_pkg(sub)
+    _add_update_pkg(sub)
     _add_close_pkg(sub)
     _add_watch(sub)
     _add_collect(sub)
@@ -179,7 +193,7 @@ def _handle_make_config(args):
 def _handle_install(args):
     cfg = config.load_main(args.config)
     release.ensure_environment()
-    snapshot.create_baseline(cfg)
+    snapshot.create_baseline(cfg, prompt_overwrite=True)
     return 0
 
 
@@ -192,6 +206,11 @@ def _handle_snapshot(args):
 def _handle_create_pkg(args):
     cfg = config.load_main(args.config)
     release.create_pkg(cfg, args.pkg_id)
+    return 0
+
+def _handle_update_pkg(args):
+    cfg = config.load_main(args.config)
+    release.update_pkg(cfg, args.pkg_id)
     return 0
 
 

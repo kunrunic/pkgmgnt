@@ -7,13 +7,13 @@ import sys
 import textwrap
 
 # Default locations under the user's home directory.
-BASE_DIR = os.path.expanduser("~/pkmgr")
+BASE_DIR = os.path.expanduser("~/pkgmgr")
 DEFAULT_CONFIG_DIR = os.path.join(BASE_DIR, "config")
 DEFAULT_STATE_DIR = os.path.join(BASE_DIR, "local", "state")
 DEFAULT_CACHE_DIR = os.path.join(BASE_DIR, "cache")
-# New default lives directly under BASE_DIR; legacy configs under BASE_DIR/config
-# are still discovered automatically.
-DEFAULT_MAIN_CONFIG = os.path.join(BASE_DIR, "pkgmgr.yaml")
+# Default main config lives under BASE_DIR/config; configs under BASE_DIR
+# are also discovered for backward compatibility.
+DEFAULT_MAIN_CONFIG = os.path.join(DEFAULT_CONFIG_DIR, "pkgmgr.yaml")
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(HERE, "templates")
 
@@ -29,13 +29,22 @@ pkg_release_root: ~/PKG/RELEASE
 sources:
   - /path/to/source-A
   - /path/to/source-B
+  
 source:
   # glob patterns to exclude from source scanning
   exclude:
     - "**/build/**"
     - "**/*.tmp"
+    - "**/bk"
+    - "**/*.sc*"
+    - "**/unit_test/**"
+    - "Jamrules*"
+    - "Jamfile*"
+    - "**/Jamrules*"
+    - "**/Jamfile*"
 
 artifacts:
+  root: ~/HOME
   targets: [bin, lib, data]
   # glob patterns to exclude in artifacts area
   exclude:
@@ -75,12 +84,11 @@ pkg:
   status: "open"  # open|closed
 
 include:
-  sources: ["relative/path/from/source/root"]
-  artifacts: ["bin", "lib", "data"]
-  pkg_dir: ["docs", "notes"]
+  releases: []
 
 git:
-  keywords: ["BUG", "FEATURE"]
+  repo_root: null  # optional override; default is git rev-parse from cwd
+  keywords: []
   since: null  # e.g. "2024-01-01"
   until: null
 
@@ -92,7 +100,7 @@ MAIN_DEFAULTS = {
     "pkg_release_root": None,
     "sources": [],
     "source": {"exclude": []},
-    "artifacts": {"targets": [], "exclude": []},
+    "artifacts": {"root": None, "targets": [], "exclude": []},
     "watch": {"interval_sec": 60, "on_change": []},
     "collectors": {"enabled": ["checksums"]},
     "actions": {},
@@ -174,7 +182,9 @@ def _validate_main_config(data):
     cfg["source"] = {"exclude": _ensure_list_of_strings(src.get("exclude"), "source.exclude")}
 
     artifacts = cfg.get("artifacts") if isinstance(cfg.get("artifacts"), dict) else {}
+    art_root = artifacts.get("root")
     cfg["artifacts"] = {
+        "root": str(art_root) if art_root else None,
         "targets": _ensure_list_of_strings(artifacts.get("targets"), "artifacts.targets"),
         "exclude": _ensure_list_of_strings(artifacts.get("exclude"), "artifacts.exclude"),
     }
@@ -217,16 +227,46 @@ def write_template(path=None):
     print("[make-config] wrote template to %s" % target)
 
 
-def write_pkg_template(path):
-    """Write a pkg.yaml template for a specific package."""
+def write_pkg_template(path, pkg_id=None, pkg_root=None, include_releases=None, git_cfg=None, collectors_enabled=None):
+    """
+    Write a pkg.yaml file. When pkg_id/pkg_root provided, render with those values;
+    otherwise fall back to the static template.
+    """
     target = os.path.abspath(path)
     parent = os.path.dirname(target)
     if parent and not os.path.exists(parent):
         os.makedirs(parent)
-    content = _load_template_file("pkg.yaml.sample", PKG_TEMPLATE)
-    with open(target, "w") as f:
-        f.write(content)
-    print("[create-pkg] wrote pkg template to %s" % target)
+
+    if pkg_id is None or pkg_root is None or yaml is None:
+        content = _load_template_file("pkg.yaml.sample", PKG_TEMPLATE)
+        with open(target, "w") as f:
+            f.write(content)
+    else:
+        data = {
+            "pkg": {"id": str(pkg_id), "root": os.path.abspath(os.path.expanduser(pkg_root)), "status": "open"},
+            "include": {"releases": include_releases or []},
+            "git": {
+                "repo_root": (git_cfg or {}).get("repo_root"),
+                "keywords": _ensure_list_of_strings((git_cfg or {}).get("keywords"), "git.keywords"),
+                "since": (git_cfg or {}).get("since"),
+                "until": (git_cfg or {}).get("until"),
+            },
+            "collectors": {"enabled": collectors_enabled or ["checksums"]},
+        }
+        with open(target, "w") as f:
+            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=True)
+    print("[create-pkg] wrote pkg config to %s" % target)
+
+
+def load_pkg_config(path):
+    """Load a pkg.yaml file."""
+    if yaml is None:
+        raise RuntimeError("PyYAML not installed; cannot read %s" % path)
+    abs_path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.exists(abs_path):
+        raise RuntimeError("pkg config not found: %s" % abs_path)
+    with open(abs_path, "r") as f:
+        return yaml.safe_load(f) or {}
 
 
 def discover_main_configs(base_dir=None):
