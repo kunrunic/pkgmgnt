@@ -3,7 +3,7 @@
 패키지 관리/배포 워크플로를 위한 Python 패키지입니다. 현재는 스캐폴드 상태이며, CLI와 설정 템플릿, 릴리스 번들링까지 제공됩니다.
 
 ## 디자인/Use case
-- 흐름 요약과 Mermaid 시퀀스 다이어그램은 `design/mermaid/use-cases.md`에 있습니다(깃헙에서 바로 렌더링됨).
+- 흐름 요약과 Mermaid 시퀀스 다이어그램은 [`design/mermaid/use-cases.md`](design/mermaid/use-cases.md)에 있습니다.
 - 주 명령별 설정/동작 요약과 make-config/install/create-pkg/update-pkg/close-pkg 시퀀스를 포함합니다.
 
 ## 구성
