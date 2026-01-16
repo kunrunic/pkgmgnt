@@ -149,10 +149,6 @@ def collect_for_pkg(cfg, pkg_id, collectors=None):
     )
 
 
-def export_pkg(cfg, pkg_id, fmt):
-    """Export pkg data placeholder."""
-    print("[export] pkg=%s format=%s (stub)" % (pkg_id, fmt))
-
 
 def run_actions(cfg, names, extra_args=None):
     """Run configured actions by name. Returns result list."""

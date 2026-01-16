@@ -63,7 +63,7 @@ collectors:
 actions:
   # action_name: list of commands (cmd required, cwd/env optional)
   export_cksum:
-    - cmd: python cksum_excel.py
+    - cmd: python export_cksum.py --pkg-dir /path/to/pkg --excel /path/to/template.xlsx
       cwd: /app/script
       env: { APP_ENV: dev }
   export_world_dev:

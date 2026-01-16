@@ -9,7 +9,7 @@ try:
 except Exception:
     argparse = None
 
-from . import config, snapshot, release, gitcollect, watch, __version__
+from . import config, snapshot, release, watch, __version__
 
 
 def _add_make_config(sub):
@@ -158,18 +158,6 @@ def _add_point(sub):
     p.set_defaults(func=_handle_point)
 
 
-def _add_export(sub):
-    p = sub.add_parser("export", help="export pkg data (excel/word/etc)")
-    p.add_argument("--pkg", required=True, help="package identifier")
-    p.add_argument("--format", choices=["excel", "word", "json"], required=True)
-    p.add_argument(
-        "--config",
-        default=None,
-        help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
-    )
-    p.set_defaults(func=_handle_export)
-
-
 def build_parser():
     if argparse is None:
         raise RuntimeError("argparse not available; install argparse")
@@ -261,12 +249,6 @@ def _handle_watch(args):
 def _handle_collect(args):
     cfg = config.load_main(args.config)
     release.collect_for_pkg(cfg, args.pkg, args.collectors)
-    return 0
-
-
-def _handle_export(args):
-    cfg = config.load_main(args.config)
-    release.export_pkg(cfg, args.pkg, args.format)
     return 0
 
 

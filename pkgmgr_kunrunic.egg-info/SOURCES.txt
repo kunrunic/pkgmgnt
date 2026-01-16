@@ -5,7 +5,6 @@ pkgmgr/__init__.py
 pkgmgr/__main__.py
 pkgmgr/cli.py
 pkgmgr/config.py
-pkgmgr/gitcollect.py
 pkgmgr/points.py
 pkgmgr/release.py
 pkgmgr/shell_integration.py

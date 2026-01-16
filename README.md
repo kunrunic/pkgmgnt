@@ -1,6 +1,6 @@
 # pkgmgr
 
-패키지 관리/배포 워크플로를 위한 Python 패키지입니다. 현재는 스캐폴드 상태이며, CLI와 설정 템플릿, 릴리스 번들링까지 제공됩니다.
+패키지 관리/배포 워크플로를 위한 Python 패키지입니다. 현재는 패키지 단위 관리와 릴리스 번들링에 초점을 둔 초기 버전입니다.
 
 ## 디자인/Use case
 - 흐름 요약과 Mermaid 시퀀스 다이어그램은 [`design/mermaid/use-cases.md`](design/mermaid/use-cases.md)에 있습니다.
@@ -9,7 +9,7 @@
 ## 구성
 - `pkgmgr/cli.py` : CLI 엔트리 (아래 명령어 참조)
 - `pkgmgr/config.py` : `pkgmgr.yaml` / `pkg.yaml` 템플릿 생성 및 로더 (PyYAML 필요)
-- `pkgmgr/snapshot.py`, `pkgmgr/release.py`, `pkgmgr/gitcollect.py`, `pkgmgr/watch.py` : 스냅샷/패키지 수명주기/깃 수집/감시/릴리스 번들
+- `pkgmgr/snapshot.py`, `pkgmgr/release.py`, `pkgmgr/watch.py` : 스냅샷/패키지 수명주기/감시/릴리스 번들
 - `pkgmgr/collectors/` : 컬렉터 인터페이스 및 체크섬 컬렉터 스텁
 - 템플릿: `pkgmgr/templates/pkgmgr.yaml.sample`, `pkgmgr/templates/pkg.yaml.sample`
 
@@ -22,7 +22,7 @@
 - 로컬/개발: 리포지토리 클론 후 `python -m pip install .` 또는 빌드 산출물(`dist/pkgmgr_kunrunic-<버전>-py3-none-any.whl`)을 `python -m pip install dist/<파일>`로 설치.
 - 확인: `pkgmgr --version` 혹은 `python -m pkgmgr.cli --version`.
 
-## 기본 사용 흐름 (스캐폴드)
+## 기본 사용 흐름
 아래 명령은 `pkgmgr ...` 또는 `python -m pkgmgr.cli ...` 형태로 실행합니다.  
 설정 파일 기본 위치는 `~/pkgmgr/pkgmgr.yaml`이며, `~/pkgmgr/pkgmgr*.yaml`과 `~/pkgmgr/config/pkgmgr*.yaml`을 자동 탐색합니다(여러 개면 선택 필요, `--config`로 강제 지정 가능). 상태/릴리스 데이터는 `~/pkgmgr/local/state` 아래에 기록됩니다.
 
@@ -58,8 +58,15 @@ pkgmgr update-pkg <pkg-id> [--config <path>]
 - 릴리스 번들: `include.releases` 최상위 디렉터리별로 `release/<root>/release.vX.Y.Z/`를 생성. `--release` 전까지는 최신 버전을 유지하며 변경분만 추가/덮어쓰기/삭제 반영(버전 증가 없음), 이전 버전과 해시가 동일한 파일은 스킵. 각 릴리스 폴더에 `PKG_NOTE`(1회 생성, 사용자 내용 유지)와 `PKG_LIST`(매번 갱신) 작성.
 - 실행 결과는 `~/pkgmgr/local/state/pkg/<id>/updates/update-<ts>.json`에 기록(`git`, `checksums`, `release` 메타 포함).
 
-### (기타) watch / collect / actions / export / point
-기능은 여전히 스텁 혹은 최소 구현 상태입니다. 필요 시 `pkgmgr watch`, `pkgmgr collect`, `pkgmgr actions`, `pkgmgr point`, `pkgmgr export`를 이용할 수 있으며, 추후 강화 예정입니다.
+### 5) actions — 외부 작업 실행
+```
+pkgmgr actions
+pkgmgr --config <path> actions <name> [args...]
+```
+- 설정의 `actions`에 등록된 작업 목록을 출력하거나, 지정한 작업을 실행합니다.
+- `<name>` 뒤의 모든 인자는 액션 커맨드에 그대로 전달됩니다.
+- 예: `pkgmgr --config ~/pkgmgr/pkgmgr.yaml actions export_cksum --root R --time 4`
+- 예: `pkgmgr --config ~/pkgmgr/pkgmgr.yaml actions export_cksum --pkg-dir /path/to/pkg --excel /path/to/template.xlsx`
 
 ## PATH/alias 자동 추가
 - PyPI/로컬 설치 후 `python -m pkgmgr.cli install`을 실행하면 현재 파이썬의 `bin` 경로(예: venv/bin, ~/.local/bin 등)를 감지해 사용 중인 쉘의 rc 파일에 PATH/alias를 추가합니다.
@@ -75,9 +82,9 @@ pkgmgr update-pkg <pkg-id> [--config <path>]
   - `sources`: 관리할 소스 경로 목록  
   - `source.exclude`: 소스 스캔 제외 패턴 (glob 지원)  
   - `artifacts.targets` / `artifacts.exclude`: 배포 대상 포함/제외 규칙 (glob 지원: `tmp/**`, `*.bak`, `**/*.tmp` 등)  
-  - `watch.interval_sec`: 감시 폴링 주기  
-  - `watch.on_change`: 변경 시 실행할 action 이름 리스트  
-  - `collectors.enabled`: 기본 활성 컬렉터
+  - `watch.interval_sec`: 감시 폴링 주기(향후 노출 예정)  
+  - `watch.on_change`: 변경 시 실행할 action 이름 리스트(향후 노출 예정)  
+  - `collectors.enabled`: 기본 활성 컬렉터(향후 확장 예정)
   - `actions`: action 이름 → 실행할 커맨드 목록 (각 항목에 `cmd` 필수, `cwd`/`env` 선택)
 
 - `pkgmgr/templates/pkg.yaml.sample` : 패키지별 설정 샘플  
@@ -87,12 +94,16 @@ pkgmgr update-pkg <pkg-id> [--config <path>]
   - `collectors.enabled`: 패키지별 컬렉터 설정
 
 ## 주의
-- 아직 핵심 로직(스냅샷/감시/수집/내보내기)은 스텁입니다. 추후 단계적으로 구현/교체 예정입니다.
+- 시스템 전체 관리(감시/수집/포인트) 기능은 아직 확장 단계입니다. 추후 단계적으로 구현/교체 예정입니다.
+
+## 확장성 가이드
+- `actions`를 기본 확장 포인트로 사용합니다. 배포/내보내기/알림 등은 액션으로 위임하는 것을 권장합니다.
+- 릴리스 번들 포맷(`release/<root>/release.vX.Y.Z/`, `PKG_LIST`, `PKG_NOTE`)은 외부 도구와의 연동 기준점으로 사용합니다.
+- `~/pkgmgr/local/state/pkg/<id>/updates/update-<ts>.json`은 자동화 파이프라인에서 읽을 수 있는 결과물로 취급합니다.
+- 전역 수집/집계는 `collectors` 확장으로 흡수할 계획이며, CLI로 노출하기 전까지는 내부 확장용으로 유지합니다.
 
 ## TODO (우선순위)
 - 감시/포인트 고도화: watchdog/inotify 연동, diff 결과를 포인트 메타에 기록, 에러/로그 처리.
 - baseline/릴리스 알림: baseline 대비 변경 감지 시 알림/확인 흐름 추가(README/README.txt TODO 반영).
-- Git 수집: `gitcollect.py` 확장(키워드/정규식 수집, state/pkg/<id>/commits.json 저장).
 - 컬렉터 파이프라인: 체크섬 외 collector 등록/선택/실행 로직, include 기준 실행, 정적/동적/EDR/AV 훅 자리 마련.
-- Export/산출물: `export` 기본 JSON 덤프, excel/word 후크 설계, 포인트 단위 산출물 묶기.
 - 테스트/CI: watch diff/포인트/라이프사이클 단위 테스트 추가, pytest/CI 스크립트 보강.
