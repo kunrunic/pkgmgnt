@@ -13,6 +13,73 @@ from . import config
 STATE_DIR = config.DEFAULT_STATE_DIR
 
 
+class DuplicateBaselineError(RuntimeError):
+    """Raised when attempting to create a baseline that already exists."""
+
+
+class ProgressReporter(object):
+    """TTY-friendly one-line progress reporter (no-op when stdout is not a TTY)."""
+
+    def __init__(self, prefix):
+        self.prefix = prefix
+        self._is_tty = sys.stdout.isatty()
+        self._last_len = 0
+        self._label = None
+        self._total = 0
+        self._current = 0
+
+    def start(self, label, total):
+        if not self._is_tty:
+            return
+        self._label = label
+        self._total = int(total or 0)
+        self._current = 0
+        self._render()
+
+    def advance(self, step=1):
+        if not self._is_tty:
+            return
+        self._current += int(step or 0)
+        if self._current > self._total:
+            self._current = self._total
+        self._render()
+
+    def finish(self):
+        if not self._is_tty:
+            return
+        if self._total == 0:
+            self._current = 0
+        else:
+            self._current = self._total
+        self._render(final=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _render(self, final=False):
+        total = self._total
+        current = self._current
+        denom = total if total > 0 else 1
+        pct = int((float(current) / float(denom)) * 100)
+        if total == 0 and final:
+            pct = 100
+        bar_len = 30
+        filled = int((float(current) / float(denom)) * bar_len)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        label = self._label or ""
+        line = "[%s] %s %d/%d %3d%% [%s]" % (
+            self.prefix,
+            label,
+            current,
+            total,
+            pct,
+            bar,
+        )
+        pad = " " * max(0, self._last_len - len(line))
+        sys.stdout.write("\r" + line + pad)
+        sys.stdout.flush()
+        self._last_len = len(line)
+
+
 def _ensure_state_dir():
     if not os.path.exists(STATE_DIR):
         os.makedirs(STATE_DIR)
@@ -39,12 +106,27 @@ def _should_skip(relpath, patterns):
     return False
 
 
-def _scan(root, exclude):
+def _count_files(root_abs, exclude):
+    total = 0
+    for base, _, files in os.walk(root_abs):
+        for name in files:
+            abspath = os.path.join(base, name)
+            rel = os.path.relpath(abspath, root_abs).replace("\\", "/")
+            if _should_skip(rel, exclude):
+                continue
+            total += 1
+    return total
+
+
+def _scan(root, exclude, progress=None, label=None):
     res = {}
     root_abs = os.path.abspath(os.path.expanduser(root))
     if not os.path.exists(root_abs):
         print("[snap] skip missing root: %s" % root_abs)
         return res
+    if progress and label:
+        total = _count_files(root_abs, exclude)
+        progress.start(label, total)
     for base, _, files in os.walk(root_abs):
         for name in files:
             abspath = os.path.join(base, name)
@@ -60,13 +142,17 @@ def _scan(root, exclude):
                 }
             except Exception as e:
                 print("[snap] warn skip %s: %s" % (abspath, str(e)))
+            if progress:
+                progress.advance()
+    if progress and label:
+        progress.finish()
     return res
 
 
 def _maybe_keep_existing_baseline(path, prompt_overwrite):
     """
     When prompt_overwrite=True and baseline exists, ask user (if tty) whether to overwrite.
-    Returns existing data if keeping, else None to continue writing a new baseline.
+    Raises DuplicateBaselineError when overwrite is declined or non-interactive.
     """
     if not prompt_overwrite:
         return None
@@ -74,25 +160,17 @@ def _maybe_keep_existing_baseline(path, prompt_overwrite):
         return None
 
     if not sys.stdin.isatty():
-        print("[baseline] existing baseline at %s; non-tty -> keeping existing" % path)
-        try:
-            with open(path, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        msg = "[baseline] existing baseline at %s; non-tty -> refusing overwrite" % path
+        raise DuplicateBaselineError(msg)
 
     ans = input("[baseline] existing baseline at %s; overwrite? [y/N]: " % path).strip().lower()
     if ans not in ("y", "yes"):
-        print("[baseline] keeping existing baseline; skipped overwrite")
-        try:
-            with open(path, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        msg = "[baseline] keeping existing baseline; skipped overwrite"
+        raise DuplicateBaselineError(msg)
     return None
 
 
-def _scan_artifacts(cfg):
+def _scan_artifacts(cfg, progress=None):
     """
     Scan artifact roots/targets similar to sources.
     artifacts.root: base path (optional)
@@ -113,11 +191,12 @@ def _scan_artifacts(cfg):
         else:
             target_path = target_str
         target_path = os.path.abspath(os.path.expanduser(target_path))
-        result[target_path] = _scan(target_path, art_exclude)
+        label = "artifact %s" % target_path
+        result[target_path] = _scan(target_path, art_exclude, progress=progress, label=label)
     return result
 
 
-def create_baseline(cfg, prompt_overwrite=False):
+def create_baseline(cfg, prompt_overwrite=False, progress=None):
     """
     Collect initial baseline snapshot.
     Scans sources and artifacts (if configured).
@@ -136,9 +215,12 @@ def create_baseline(cfg, prompt_overwrite=False):
     }
 
     for root in sources:
-        snapshot_data["sources"][root] = _scan(root, src_exclude)
+        label = "source %s" % root
+        snapshot_data["sources"][root] = _scan(
+            root, src_exclude, progress=progress, label=label
+        )
 
-    snapshot_data["artifacts"] = _scan_artifacts(cfg)
+    snapshot_data["artifacts"] = _scan_artifacts(cfg, progress=progress)
 
     path = os.path.join(STATE_DIR, "baseline.json")
     existing = _maybe_keep_existing_baseline(path, prompt_overwrite)
@@ -154,7 +236,7 @@ def create_baseline(cfg, prompt_overwrite=False):
     return snapshot_data
 
 
-def create_snapshot(cfg):
+def create_snapshot(cfg, progress=None):
     """
     Collect a fresh snapshot (for updates).
     """
@@ -172,9 +254,12 @@ def create_snapshot(cfg):
     }
 
     for root in sources:
-        snapshot_data["sources"][root] = _scan(root, src_exclude)
+        label = "source %s" % root
+        snapshot_data["sources"][root] = _scan(
+            root, src_exclude, progress=progress, label=label
+        )
 
-    snapshot_data["artifacts"] = _scan_artifacts(cfg)
+    snapshot_data["artifacts"] = _scan_artifacts(cfg, progress=progress)
 
     path = os.path.join(STATE_DIR, "snapshot.json")
     f = open(path, "w")

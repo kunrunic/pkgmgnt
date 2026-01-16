@@ -5,8 +5,10 @@ import json
 import os
 import re
 import shutil
+import shlex
 import sys
 import time
+import tarfile
 import subprocess
 
 from . import config, snapshot, shell_integration, points
@@ -14,10 +16,9 @@ from .collectors import checksums as checksums_module
 
 
 def ensure_environment():
-    """Prepare environment: update shell PATH/alias for current python scripts."""
+    """Prepare environment: print shell PATH/alias instructions."""
     script_dir = os.path.dirname(sys.executable)
     shell_integration.ensure_path_and_alias(script_dir)
-    print("[install] ensured shell PATH/alias for script dir: %s" % script_dir)
 
 
 def _pkg_dir(cfg, pkg_id):
@@ -153,12 +154,17 @@ def export_pkg(cfg, pkg_id, fmt):
     print("[export] pkg=%s format=%s (stub)" % (pkg_id, fmt))
 
 
-def run_actions(cfg, names):
+def run_actions(cfg, names, extra_args=None):
     """Run configured actions by name. Returns result list."""
     actions = cfg.get("actions", {}) or {}
     if not names:
         print("[actions] no action names provided")
         return []
+    extra_args = extra_args or []
+    extra_suffix = ""
+    if extra_args:
+        quoted = [shlex.quote(str(arg)) for arg in extra_args]
+        extra_suffix = " " + " ".join(quoted)
     results = []
     for name in names:
         entries = actions.get(name)
@@ -178,6 +184,8 @@ def run_actions(cfg, names):
             if not cmd:
                 print("[actions] skip empty cmd for %s #%d" % (name, idx + 1))
                 continue
+            if extra_suffix:
+                cmd = "%s%s" % (cmd, extra_suffix)
             rc = _run_cmd(cmd, cwd=cwd, env=env, label="%s #%d" % (name, idx + 1))
             results.append(
                 {
@@ -248,7 +256,7 @@ def _git_repo_root(pkg_root, git_cfg):
         print("[git] repo_root %s not found; falling back to git rev-parse" % repo_root)
     try:
         out = subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"], stderr=subprocess.STDOUT, text=True
+            ["git", "rev-parse", "--show-toplevel"], stderr=subprocess.STDOUT, universal_newlines=True
         )
         return out.strip()
     except Exception:
@@ -280,17 +288,17 @@ def _collect_git_hits(pkg_cfg, pkg_root):
             "log",
             "--name-only",
             "--pretty=format:%H\t%s",
-            "--grep",
-            kw,
+            "--grep=%s" % kw,
             "--regexp-ignore-case",
             "--all",
+            "--",
         ]
         if since:
             cmd.append("--since=%s" % since)
         if until:
             cmd.append("--until=%s" % until)
         try:
-            out = subprocess.check_output(cmd, cwd=repo_root, stderr=subprocess.STDOUT, text=True)
+            out = subprocess.check_output(cmd, cwd=repo_root, stderr=subprocess.STDOUT, universal_newlines=True)
         except Exception as e:
             print("[git] log failed for keyword %s: %s" % (kw, str(e)))
             continue
@@ -314,23 +322,31 @@ def _collect_git_hits(pkg_cfg, pkg_root):
     for c in commits.values():
         c["files"] = sorted(c["files"])
         c["keywords"] = sorted(c["keywords"])
+        # Provide stable, user-facing aliases.
+        c["commit"] = c.get("hash")
         # fetch author and full commit message body for richer context
         try:
             info = subprocess.check_output(
-                ["git", "show", "-s", "--format=%an\t%ae\t%ad%n%B", c["hash"]],
+                ["git", "show", "-s", "--format=%an\t%ae\t%ad%n%s%n%b", c["hash"]],
                 cwd=repo_root,
                 stderr=subprocess.STDOUT,
-                text=True,
+                universal_newlines=True,
             )
             header, _, body = info.partition("\n")
             parts = header.split("\t")
             c["author_name"] = parts[0] if len(parts) > 0 else ""
             c["author_email"] = parts[1] if len(parts) > 1 else ""
             c["authored_at"] = parts[2] if len(parts) > 2 else ""
-            c["message"] = body.strip()
+            c["message"] = body.rstrip("\n")
         except Exception as e:
             print("[git] show failed for %s: %s" % (c["hash"], str(e)))
             c["message"] = c.get("subject", "")
+        if c.get("author_name") or c.get("author_email"):
+            if c.get("author_email"):
+                c["author"] = "%s <%s>" % (c.get("author_name", ""), c.get("author_email", ""))
+            else:
+                c["author"] = c.get("author_name", "")
+        c["date"] = c.get("authored_at", "")
         result["commits"].append(c)
     result["commits"] = sorted(result["commits"], key=lambda c: c["hash"])
     return result, files
@@ -364,25 +380,33 @@ def _hash_paths(paths):
 
 
 _REL_VER_RE = re.compile(r"release\.v(\d+)\.(\d+)\.(\d+)$")
+_PKG_NOTE_NAME = "PKG_NOTE"
+_PKG_LIST_NAME = "PKG_LIST"
 
 
-def _list_release_versions(base_dir):
-    """Return list of (major, minor, patch, path) under base_dir."""
+def _list_release_versions(base_dir, include_history=False):
+    """Return list of (major, minor, patch, path) under base_dir (optional HISTORY)."""
     versions = []
     if not os.path.isdir(base_dir):
         return versions
-    for name in os.listdir(base_dir):
-        m = _REL_VER_RE.match(name)
-        if not m:
+    scan_dirs = [base_dir]
+    if include_history:
+        scan_dirs.append(os.path.join(base_dir, "HISTORY"))
+    for scan_dir in scan_dirs:
+        if not os.path.isdir(scan_dir):
             continue
-        ver = tuple(int(x) for x in m.groups())
-        versions.append((ver, os.path.join(base_dir, name)))
+        for name in os.listdir(scan_dir):
+            m = _REL_VER_RE.match(name)
+            if not m:
+                continue
+            ver = tuple(int(x) for x in m.groups())
+            versions.append((ver, os.path.join(scan_dir, name)))
     versions.sort()
     return versions
 
 
 def _next_release_version(base_dir):
-    versions = _list_release_versions(base_dir)
+    versions = _list_release_versions(base_dir, include_history=True)
     if not versions:
         return (0, 0, 1), None
     latest_ver, latest_path = versions[-1]
@@ -465,55 +489,177 @@ def _prepare_release(pkg_dir, pkg_cfg):
 
     for root, entries in grouped.items():
         root_dir = os.path.join(release_root, root)
-        next_ver, prev_dir = _next_release_version(root_dir)
-        release_name = _format_version(next_ver)
-        release_dir = os.path.join(root_dir, release_name)
+        active_versions = _list_release_versions(root_dir, include_history=False)
+        history_dir = os.path.join(root_dir, "HISTORY")
+        history_versions = _list_release_versions(history_dir, include_history=False)
+        baseline_dir = os.path.join(history_dir, "BASELINE")
+        reuse_active = False
+
+        if active_versions:
+            latest_ver, latest_path = active_versions[-1]
+            release_name = _format_version(latest_ver)
+            release_dir = latest_path
+            prev_dir = latest_path
+            reuse_active = True
+            base_label = os.path.basename(history_versions[-1][1]) if history_versions else "none"
+        else:
+            next_ver, prev_dir = _next_release_version(root_dir)
+            release_name = _format_version(next_ver)
+            release_dir = os.path.join(root_dir, release_name)
+            base_label = os.path.basename(prev_dir) if prev_dir else "none"
+
+        has_baseline = os.path.isdir(baseline_dir)
+        baseline_hashes = _load_prev_hashes(baseline_dir) if has_baseline else {}
+        release_hashes = _load_prev_hashes(release_dir) if reuse_active and os.path.isdir(release_dir) else {}
+        copied = []
+        added = []
+        updated = []
+        skipped = []
+        to_copy = []
+        expected = set(rel for _, rel in entries)
+        existing = set()
+        if reuse_active and os.path.isdir(release_dir):
+            for base, _, names in os.walk(release_dir):
+                for name in names:
+                    if name in (_PKG_NOTE_NAME, _PKG_LIST_NAME):
+                        continue
+                    abspath = os.path.join(base, name)
+                    if not os.path.isfile(abspath):
+                        continue
+                    rel = os.path.relpath(abspath, release_dir)
+                    existing.add(rel)
+        curr_hashes = {}
+        removed = set()
+
+        for src, rel in entries:
+            baseline_hash = baseline_hashes.get(rel)
+            try:
+                curr_hash = checksums_module.sha256_of_file(src)
+                curr_hashes[rel] = curr_hash
+            except Exception as e:
+                print("[update-pkg] failed to hash %s: %s" % (src, str(e)))
+                continue
+            if baseline_hash and baseline_hash == curr_hash:
+                skipped.append(rel)
+                continue
+            release_hash = release_hashes.get(rel)
+            if release_hash and release_hash == curr_hash:
+                continue
+            copied.append(rel)
+            if release_hash:
+                updated.append(rel)
+            else:
+                added.append(rel)
+            to_copy.append((src, rel))
+
+        if reuse_active:
+            for rel in existing:
+                if rel not in expected:
+                    removed.add(rel)
+                    continue
+                baseline_hash = baseline_hashes.get(rel)
+                curr_hash = curr_hashes.get(rel)
+                if baseline_hash and curr_hash and baseline_hash == curr_hash:
+                    removed.add(rel)
+        elif not has_baseline:
+            removed = existing - expected
+
+        if (has_baseline or reuse_active) and not copied and not removed:
+            print("[update-pkg] no changes for %s; skipping release" % root)
+            continue
+
+        note_payload = None
+        if reuse_active and os.path.exists(release_dir):
+            existing_note = os.path.join(release_dir, _PKG_NOTE_NAME)
+            if os.path.exists(existing_note):
+                try:
+                    with open(existing_note, "r") as f:
+                        note_payload = f.read()
+                except Exception:
+                    note_payload = None
         if not os.path.exists(release_dir):
             os.makedirs(release_dir)
 
-        prev_hashes = _load_prev_hashes(prev_dir) if prev_dir else {}
-        copied = []
-        skipped = []
-
-        for src, rel in entries:
+        for src, rel in to_copy:
             dest = os.path.join(release_dir, rel)
             dest_parent = os.path.dirname(dest)
             if dest_parent and not os.path.exists(dest_parent):
                 os.makedirs(dest_parent)
-            prev_hash = prev_hashes.get(rel)
-            try:
-                curr_hash = checksums_module.sha256_of_file(src)
-            except Exception as e:
-                print("[update-pkg] failed to hash %s: %s" % (src, str(e)))
-                continue
-            if prev_hash and prev_hash == curr_hash:
-                skipped.append(rel)
-                continue
             shutil.copy2(src, dest)
-            copied.append(rel)
+        for rel in sorted(removed):
+            abspath = os.path.join(release_dir, rel)
+            if os.path.isfile(abspath):
+                os.remove(abspath)
+        for base, dirs, files in os.walk(release_dir, topdown=False):
+            if files:
+                continue
+            if not dirs and base != release_dir:
+                os.rmdir(base)
 
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        prev_label = _format_version(_list_release_versions(root_dir)[-2][0]) if prev_dir else "none"
-        readme_lines = [
+        note_path = os.path.join(release_dir, _PKG_NOTE_NAME)
+        if note_payload is not None:
+            with open(note_path, "w") as f:
+                f.write(note_payload)
+        elif not os.path.exists(note_path):
+            with open(note_path, "w") as f:
+                f.write(
+                    "\n".join(
+                        [
+                            "Release root: %s" % root,
+                            "Release: %s" % release_name,
+                            "Created at: %s" % ts,
+                            "",
+                            "[ package note ]",
+                            "",
+                            "상세 PKG 항목은 PKG_LIST를 참조하세요.",
+                            "",
+                        ]
+                    )
+                )
+
+        all_files = []
+        for base, _, names in os.walk(release_dir):
+            for name in names:
+                if name in (_PKG_NOTE_NAME, _PKG_LIST_NAME):
+                    continue
+                abspath = os.path.join(base, name)
+                if not os.path.isfile(abspath):
+                    continue
+                rel = os.path.relpath(abspath, release_dir)
+                all_files.append(rel)
+        all_files.sort()
+
+        change_parts = []
+        if added:
+            change_parts.append("+%d" % len(added))
+        if updated:
+            change_parts.append("~%d" % len(updated))
+        if removed:
+            change_parts.append("-%d" % len(removed))
+        change_label = " ".join(change_parts) or "no changes"
+
+        pkg_list_lines = [
             "Release root: %s" % root,
             "Release: %s" % release_name,
             "Created at: %s" % ts,
-            "Base version: %s" % prev_label,
-            "Files included: %d (skipped unchanged: %d)" % (len(copied), len(skipped)),
-            "Tar example:",
-            "  tar cvf %s.tar -C %s %s" % (release_name, root_dir, release_name),
+            "Base version: %s" % base_label,
+            "Files changed: %s (skipped unchanged: %d)" % (change_label, len(skipped)),
             "",
             "Included files:",
         ]
-        readme_lines.extend(["  - %s" % f for f in copied] or ["  (none)"])
-        readme_lines.append("")
-        readme_lines.append("TODO: baseline change detection/notification for future revision.")
+        pkg_list_lines.extend(["  - %s" % f for f in all_files] or ["  (none)"])
+        pkg_list_lines.append("")
+        pkg_list_lines.append("Note: 상세 PKG 정보는 PKG_NOTE를 확인하세요.")
 
-        readme_path = os.path.join(release_dir, "README.txt")
-        with open(readme_path, "w") as f:
-            f.write("\n".join(readme_lines))
+        pkg_list_path = os.path.join(release_dir, _PKG_LIST_NAME)
+        with open(pkg_list_path, "w") as f:
+            f.write("\n".join(pkg_list_lines))
 
-        print("[update-pkg] prepared %s (files=%d skipped=%d)" % (release_dir, len(copied), len(skipped)))
+        print(
+            "[update-pkg] prepared %s (%s skipped=%d)"
+            % (release_dir, change_label, len(skipped))
+        )
         bundles.append(
             {
                 "root": root,
@@ -521,11 +667,132 @@ def _prepare_release(pkg_dir, pkg_cfg):
                 "release_name": release_name,
                 "copied": copied,
                 "skipped": skipped,
+                "added": added,
+                "updated": updated,
+                "removed": sorted(removed),
                 "prev_release": prev_dir,
             }
         )
 
     return bundles
+
+
+def _sync_baseline_root(root_dir, entries):
+    baseline_dir = os.path.join(root_dir, "HISTORY", "BASELINE")
+    if not os.path.exists(baseline_dir):
+        os.makedirs(baseline_dir)
+    expected = set(rel for _, rel in entries)
+
+    for src, rel in entries:
+        dest = os.path.join(baseline_dir, rel)
+        dest_parent = os.path.dirname(dest)
+        if dest_parent and not os.path.exists(dest_parent):
+            os.makedirs(dest_parent)
+        shutil.copy2(src, dest)
+
+    for base, _, names in os.walk(baseline_dir):
+        for name in names:
+            abspath = os.path.join(base, name)
+            if not os.path.isfile(abspath):
+                continue
+            rel = os.path.relpath(abspath, baseline_dir)
+            if rel not in expected:
+                os.remove(abspath)
+    for base, dirs, files in os.walk(baseline_dir, topdown=False):
+        if files:
+            continue
+        if not dirs and base != baseline_dir:
+            os.rmdir(base)
+
+
+def _finalize_release_root(root_dir):
+    versions = _list_release_versions(root_dir, include_history=False)
+    if not versions:
+        print("[update-pkg] no active release dir under %s" % root_dir)
+        return None
+    latest_ver, latest_path = versions[-1]
+    release_name = _format_version(latest_ver)
+    tar_path = os.path.join(root_dir, "%s.tar" % release_name)
+
+    with tarfile.open(tar_path, "w") as tar:
+        tar.add(latest_path, arcname=release_name)
+
+    history_dir = os.path.join(root_dir, "HISTORY")
+    if not os.path.exists(history_dir):
+        os.makedirs(history_dir)
+    history_target = os.path.join(history_dir, release_name)
+    if os.path.exists(history_target):
+        print("[update-pkg] history already contains %s; skipping move" % history_target)
+    else:
+        shutil.move(latest_path, history_target)
+    print("[update-pkg] finalized %s (tar=%s)" % (history_target, tar_path))
+    return tar_path
+
+
+def finalize_pkg_release(cfg, pkg_id):
+    """Finalize latest release bundle by moving to HISTORY and creating tar."""
+    pkg_dir = _pkg_dir(cfg, pkg_id)
+    if not os.path.exists(pkg_dir):
+        raise RuntimeError("pkg dir not found: %s" % pkg_dir)
+    pkg_cfg_path = os.path.join(pkg_dir, "pkg.yaml")
+    pkg_cfg = config.load_pkg_config(pkg_cfg_path)
+    release_root = os.path.join(pkg_dir, "release")
+    active_release_found = False
+    if os.path.isdir(release_root):
+        for name in os.listdir(release_root):
+            root_dir = os.path.join(release_root, name)
+            if not os.path.isdir(root_dir) or name == "HISTORY":
+                continue
+            if _list_release_versions(root_dir, include_history=False):
+                active_release_found = True
+                break
+    if not active_release_found:
+        print("[update-pkg] no active release; run `pkgmgr update-pkg %s` first" % pkg_id)
+        return []
+    source_files = _collect_release_sources(pkg_dir, pkg_cfg)
+    grouped = {}
+    for src, rel in source_files:
+        parts = rel.split("/", 1)
+        if len(parts) == 2:
+            root, subrel = parts[0], parts[1]
+        else:
+            root, subrel = "root", rel
+        grouped.setdefault(root, []).append((src, subrel))
+    finalized = []
+
+    if not os.path.isdir(release_root):
+        print("[update-pkg] release root missing: %s" % release_root)
+        return finalized
+
+    for name in sorted(os.listdir(release_root)):
+        root_dir = os.path.join(release_root, name)
+        if not os.path.isdir(root_dir):
+            continue
+        if name == "HISTORY":
+            continue
+        tar_path = _finalize_release_root(root_dir)
+        if tar_path:
+            _sync_baseline_root(root_dir, grouped.get(name, []))
+            finalized.append(tar_path)
+
+    baseline_synced = False
+    if not finalized:
+        for name in sorted(os.listdir(release_root)):
+            root_dir = os.path.join(release_root, name)
+            if not os.path.isdir(root_dir):
+                continue
+            if name == "HISTORY":
+                continue
+            baseline_dir = os.path.join(root_dir, "HISTORY", "BASELINE")
+            if os.path.isdir(baseline_dir):
+                continue
+            _sync_baseline_root(root_dir, grouped.get(name, []))
+            baseline_synced = True
+            print("[update-pkg] baseline synced for %s" % root_dir)
+
+    if not finalized and not baseline_synced:
+        print("[update-pkg] no release bundles finalized")
+    return finalized
 
 
 def update_pkg(cfg, pkg_id):

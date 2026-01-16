@@ -14,4 +14,4 @@ __all__ = [
     "points",
 ]
 
-__version__ = "0.1.0.dev4"
+__version__ = "0.1.1.dev1"

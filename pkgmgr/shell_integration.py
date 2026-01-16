@@ -1,18 +1,14 @@
 from __future__ import print_function
-"""Shell integration helpers: add PATH/alias to common shell rc files.
-
-Designed to be conservative and idempotent:
-- Only appends when marker text is absent.
-- Creates rc files if they do not exist.
-- Supports bash/zsh/csh/tcsh/fish.
-"""
+"""Shell integration helpers: print PATH/alias instructions per shell."""
 
 import os
+
+from . import config
 
 
 def ensure_path_and_alias(script_dir, alias_name="pkg", command="pkgmgr"):
     """
-    Append PATH export and alias to the user's shell rc file when possible.
+    Print PATH/alias instructions for the current shell.
     script_dir: directory where the pkgmgr console script lives (e.g. venv/bin).
     """
     if not script_dir:
@@ -21,99 +17,104 @@ def ensure_path_and_alias(script_dir, alias_name="pkg", command="pkgmgr"):
     shell = os.environ.get("SHELL", "")
     shell_name = os.path.basename(shell) if shell else ""
 
-    handlers = {
-        "bash": _update_bash_zsh,
-        "zsh": _update_bash_zsh,
-        "csh": _update_csh,
-        "tcsh": _update_csh,
-        "fish": _update_fish,
-    }
+    try:
+        lines = _instructions_for_shell(shell_name, script_dir, alias_name, command)
+    except Exception as e:
+        print("[install] shell integration failed for %s: %s" % (shell_name, str(e)))
+        return
 
-    handler = handlers.get(shell_name)
-    if not handler:
+    if not lines:
         print("[install] unknown shell '%s'; skipping rc update" % (shell_name or ""))
         return
 
-    try:
-        handler(script_dir, alias_name, command)
-    except Exception as e:
-        print("[install] shell integration failed for %s: %s" % (shell_name, str(e)))
+    if not _path_contains_dir(script_dir):
+        print("[install] PATH missing: %s" % script_dir)
+        print("[install] add to PATH, for example:")
+        for line in _path_only_instructions(shell_name, script_dir):
+            print("  " + line)
+
+    header = "[install] To use pkgmgr, add these lines to your shell rc:"
+    for line in _emit_lines_with_header(header, lines):
+        print(line)
+    readme_path = _write_readme(_emit_lines_with_header(header, lines))
+    if readme_path:
+        print("[install] Reference saved to: %s" % readme_path)
 
 
-# -------- rc updaters --------
+def _instructions_for_shell(shell_name, script_dir, alias_name, command):
+    if shell_name == "bash":
+        lines = [
+            'export PATH="%s:$PATH"' % script_dir,
+            'alias %s="%s"' % (alias_name, command),
+        ]
+        return lines
+    if shell_name == "zsh":
+        lines = [
+            'export PATH="%s:$PATH"' % script_dir,
+            'alias %s="%s"' % (alias_name, command),
+        ]
+        return lines
+    if shell_name in ("csh", "tcsh"):
+        lines = [
+            "set path = (%s $path)" % script_dir,
+            "alias %s %s" % (alias_name, command),
+        ]
+        return lines
+    if shell_name == "fish":
+        lines = [
+            "set -U fish_user_paths %s $fish_user_paths" % script_dir,
+            "alias %s %s" % (alias_name, command),
+        ]
+        return lines
+    return None
 
-def _ensure_lines(path, marker, lines):
-    """
-    Append lines to file if marker not present.
-    """
-    exists = os.path.exists(path)
-    content = ""
-    if exists:
-        try:
-            f = open(path, "r")
-            try:
-                content = f.read()
-            finally:
-                f.close()
-        except Exception:
-            content = ""
 
-    if marker in content:
+def _path_only_instructions(shell_name, script_dir):
+    if shell_name == "bash":
+        return ['export PATH="%s:$PATH"' % script_dir]
+    if shell_name == "zsh":
+        return ['export PATH="%s:$PATH"' % script_dir]
+    if shell_name in ("csh", "tcsh"):
+        return ["set path = (%s $path)" % script_dir]
+    if shell_name == "fish":
+        return ["set -U fish_user_paths %s $fish_user_paths" % script_dir]
+    return ['export PATH="%s:$PATH"' % script_dir]
+
+
+def _path_contains_dir(path):
+    if not path:
         return False
-
-    parent = os.path.dirname(path)
-    if parent and not os.path.exists(parent):
-        os.makedirs(parent)
-
-    f = open(path, "a")
     try:
-        if content and not content.endswith("\n"):
-            f.write("\n")
-        f.write("# %s\n" % marker)
-        for line in lines:
-            f.write(line + "\n")
-    finally:
-        f.close()
-    return True
+        target = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    except Exception:
+        target = path
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            entry_path = os.path.realpath(os.path.abspath(os.path.expanduser(entry)))
+        except Exception:
+            entry_path = entry
+        if entry_path == target:
+            return True
+    return False
 
 
-def _update_bash_zsh(script_dir, alias_name, command):
-    rc_path = os.path.expanduser("~/.bashrc")
-    shell = os.path.basename(os.environ.get("SHELL", ""))
-    if shell == "zsh":
-        rc_path = os.path.expanduser("~/.zshrc")
-    marker = "added by pkgmgr (sh)"
-    lines = [
-        'export PATH="%s:$PATH"' % script_dir,
-        'alias %s="%s"' % (alias_name, command),
-    ]
-    changed = _ensure_lines(rc_path, marker, lines)
-    if changed:
-        print("[install] updated %s with PATH/alias" % rc_path)
+def _emit_lines_with_header(header, lines):
+    out = [header]
+    out.extend(lines)
+    return out
 
 
-def _update_csh(script_dir, alias_name, command):
-    rc_path = os.path.expanduser("~/.cshrc")
-    shell = os.path.basename(os.environ.get("SHELL", ""))
-    if shell == "tcsh":
-        rc_path = os.path.expanduser("~/.tcshrc")
-    marker = "added by pkgmgr (csh)"
-    lines = [
-        "set path = (%s $path)" % script_dir,
-        "alias %s %s" % (alias_name, command),
-    ]
-    changed = _ensure_lines(rc_path, marker, lines)
-    if changed:
-        print("[install] updated %s with PATH/alias" % rc_path)
-
-
-def _update_fish(script_dir, alias_name, command):
-    rc_path = os.path.expanduser("~/.config/fish/config.fish")
-    marker = "added by pkgmgr (fish)"
-    lines = [
-        "set -U fish_user_paths %s $fish_user_paths" % script_dir,
-        "alias %s %s" % (alias_name, command),
-    ]
-    changed = _ensure_lines(rc_path, marker, lines)
-    if changed:
-        print("[install] updated %s with PATH/alias" % rc_path)
+def _write_readme(lines):
+    readme_path = os.path.join(config.BASE_DIR, "README.txt")
+    try:
+        base_dir = os.path.dirname(readme_path)
+        if base_dir and not os.path.exists(base_dir):
+            os.makedirs(base_dir)
+        with open(readme_path, "w") as f:
+            for line in lines:
+                f.write(line + "\n")
+        return readme_path
+    except Exception:
+        return None

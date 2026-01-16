@@ -73,7 +73,19 @@ def test_write_template_respects_overridden_default_path(monkeypatch):
 
         assert target.exists()
         content = target.read_text()
-        assert "pkg_release_root" in content
+    assert "pkg_release_root" in content
+
+
+def test_write_template_skips_when_existing(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "pkgmgr.yaml"
+        target.write_text("keep: true\n")
+        monkeypatch.setattr(config, "DEFAULT_MAIN_CONFIG", str(target))
+
+        wrote = config.write_template()
+
+        assert wrote is False
+        assert target.read_text() == "keep: true\n"
 
 
 def test_load_main_applies_defaults_and_validation():

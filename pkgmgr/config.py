@@ -215,9 +215,12 @@ def _load_template_file(filename, fallback):
 
 
 def write_template(path=None):
-    """Write the main pkgmgr.yaml template."""
+    """Write the main pkgmgr.yaml template. Returns True if written."""
     path = path or DEFAULT_MAIN_CONFIG
     target = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    if os.path.exists(target):
+        print("[make-config] config already exists at %s; remove it and re-run" % target)
+        return False
     parent = os.path.dirname(target)
     if parent and not os.path.exists(parent):
         os.makedirs(parent)
@@ -225,6 +228,7 @@ def write_template(path=None):
     with open(target, "w") as f:
         f.write(content)
     print("[make-config] wrote template to %s" % target)
+    return True
 
 
 def write_pkg_template(path, pkg_id=None, pkg_root=None, include_releases=None, git_cfg=None, collectors_enabled=None):

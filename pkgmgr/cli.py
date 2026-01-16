@@ -1,6 +1,7 @@
 from __future__ import print_function
 """CLI entrypoint scaffold for the pkg manager."""
 
+import os
 import sys
 
 try:
@@ -44,12 +45,12 @@ def _add_snapshot(sub):
     p.set_defaults(func=_handle_snapshot)
 
 def _add_actions(sub):
-    p = sub.add_parser("actions", help="run one or more configured actions")
-    p.add_argument("names", nargs="+", help="action names to run")
+    p = sub.add_parser("actions", help="list actions or run a configured action")
+    p.add_argument("name", nargs="?", help="action name to run (omit to list)")
     p.add_argument(
-        "--config",
-        default=None,
-        help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
+        "action_args",
+        nargs=argparse.REMAINDER,
+        help="args passed to the action (everything after the name)",
     )
     p.set_defaults(func=_handle_actions)
 
@@ -68,6 +69,12 @@ def _add_create_pkg(sub):
 def _add_update_pkg(sub):
     p = sub.add_parser("update-pkg", help="collect git keyword hits and checksums for a pkg")
     p.add_argument("pkg_id", help="package identifier to update")
+    p.add_argument(
+        "-release",
+        "--release",
+        action="store_true",
+        help="finalize the latest release bundle (tar + move to HISTORY)",
+    )
     p.add_argument(
         "--config",
         default=None,
@@ -169,31 +176,47 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="pkgmgr", description="Pkg manager CLI scaffold")
     # keep %(prog)s for argparse's mapping and append package version
     parser.add_argument("-V", "--version", action="version", version="%(prog)s " + __version__)
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
+    )
     sub = parser.add_subparsers(dest="command")
 
     _add_make_config(sub)
     _add_install(sub)
-    _add_snapshot(sub)
     _add_create_pkg(sub)
     _add_update_pkg(sub)
     _add_close_pkg(sub)
-    _add_watch(sub)
-    _add_collect(sub)
-    _add_export(sub)
     _add_actions(sub)
-    _add_point(sub)
     return parser
 
 
 def _handle_make_config(args):
-    config.write_template(args.output)
-    return 0
+    wrote = config.write_template(args.output)
+    return 0 if wrote else 1
 
 
 def _handle_install(args):
     cfg = config.load_main(args.config)
+    existing = []
+    readme_path = os.path.join(config.BASE_DIR, "README.txt")
+    baseline_path = os.path.join(snapshot.STATE_DIR, "baseline.json")
+    if os.path.exists(readme_path):
+        existing.append(readme_path)
+    if os.path.exists(baseline_path):
+        existing.append(baseline_path)
+    if existing:
+        print("[install] existing install artifacts found:")
+        for path in existing:
+            print("  - %s" % path)
+        print("[install] remove these files to re-run install")
+        return 1
+    print("[install] step 1/2: shell integration")
     release.ensure_environment()
-    snapshot.create_baseline(cfg, prompt_overwrite=True)
+    print("[install] step 2/2: baseline snapshot")
+    progress = snapshot.ProgressReporter("scan")
+    snapshot.create_baseline(cfg, prompt_overwrite=True, progress=progress)
     return 0
 
 
@@ -210,6 +233,9 @@ def _handle_create_pkg(args):
 
 def _handle_update_pkg(args):
     cfg = config.load_main(args.config)
+    if args.release:
+        release.finalize_pkg_release(cfg, args.pkg_id)
+        return 0
     release.update_pkg(cfg, args.pkg_id)
     return 0
 
@@ -246,8 +272,28 @@ def _handle_export(args):
 
 def _handle_actions(args):
     cfg = config.load_main(args.config)
-    release.run_actions(cfg, args.names)
+    if not args.name:
+        actions = cfg.get("actions", {}) or {}
+        if not actions:
+            print("[actions] no actions configured")
+            return 0
+        _print_actions(actions)
+        return 0
+    release.run_actions(cfg, [args.name], extra_args=args.action_args)
     return 0
+
+
+def _print_actions(actions):
+    ordered = sorted(actions.keys())
+    print("[actions] available:")
+    for idx, name in enumerate(ordered, 1):
+        entries = actions.get(name) or []
+        if isinstance(entries, dict):
+            count = 1
+        else:
+            count = len(entries)
+        print("  %d) %s (%d command(s))" % (idx, name, count))
+    return ordered
 
 def _handle_point(args):
     cfg = config.load_main(args.config)

@@ -14,7 +14,7 @@
 - 템플릿: `pkgmgr/templates/pkgmgr.yaml.sample`, `pkgmgr/templates/pkg.yaml.sample`
 
 ## 필요 사항
-- Python 3.8 이상
+- Python 3.6 이상
 - 의존성(PyYAML 등)은 `pip install pkgmgr-kunrunic` 시 자동 설치됩니다.
 
 ## 설치 (PyPI/로컬)
@@ -52,9 +52,10 @@ pkgmgr create-pkg <pkg-id> [--config <path>]
 ```
 pkgmgr update-pkg <pkg-id> [--config <path>]
 ```
+- 최신 릴리스 종료/아카이브: `pkgmgr update-pkg <pkg-id> --release` (tar 생성 후 `HISTORY/`로 이동).
 - Git: `git.repo_root`(상대/절대)에서 `git.keywords` 매칭 커밋을 모아 `message/author/subject/files/keywords` 저장.
 - 체크섬: 키워드에 걸린 파일 + `include.releases` 경로의 파일 해시 수집.
-- 릴리스 번들: `include.releases` 최상위 디렉터리별로 `release/<root>/release.vX.Y.Z/`를 자동 증가 버전으로 생성. 이전 버전과 해시가 동일한 파일은 스킵, 달라진 파일만 복사. 각 버전 폴더에 README.txt(포함/스킵 수, tar 예시, TODO) 작성. tar는 만들지 않음.
+- 릴리스 번들: `include.releases` 최상위 디렉터리별로 `release/<root>/release.vX.Y.Z/`를 생성. `--release` 전까지는 최신 버전을 유지하며 변경분만 추가/덮어쓰기/삭제 반영(버전 증가 없음), 이전 버전과 해시가 동일한 파일은 스킵. 각 릴리스 폴더에 `PKG_NOTE`(1회 생성, 사용자 내용 유지)와 `PKG_LIST`(매번 갱신) 작성.
 - 실행 결과는 `~/pkgmgr/local/state/pkg/<id>/updates/update-<ts>.json`에 기록(`git`, `checksums`, `release` 메타 포함).
 
 ### (기타) watch / collect / actions / export / point

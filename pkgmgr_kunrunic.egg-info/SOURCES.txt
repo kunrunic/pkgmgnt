@@ -23,4 +23,9 @@ pkgmgr_kunrunic.egg-info/entry_points.txt
 pkgmgr_kunrunic.egg-info/not-zip-safe
 pkgmgr_kunrunic.egg-info/requires.txt
 pkgmgr_kunrunic.egg-info/top_level.txt
+tests/test_cli_install.py
 tests/test_config.py
+tests/test_progress.py
+tests/test_release.py
+tests/test_snapshot.py
+tools/echo_args.py
