@@ -1,4 +1,6 @@
 design
 dist
 pkgmgr
+plugin
+test_data_root
 tools

@@ -15,12 +15,24 @@ from pkgmgr import config
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 
-def _load_pkg_yaml(pkg_dir, pkg_yaml):
-    if pkg_yaml:
-        return pkg_yaml
+def _load_pkg_yaml(pkg_dir):
     if not pkg_dir:
         return None
     return os.path.join(pkg_dir, "pkg.yaml")
+
+
+def _resolve_pkg_dir(pkg_id, config_path=None):
+    try:
+        if config_path:
+            main_cfg = config.load_main(path=config_path, allow_interactive=False)
+        else:
+            main_cfg = config.load_main(allow_interactive=False)
+    except Exception:
+        return None
+    release_root = main_cfg.get("pkg_release_root")
+    if not release_root:
+        return None
+    return os.path.abspath(os.path.expanduser(os.path.join(release_root, str(pkg_id))))
 
 
 def _group_release_paths(pkg_dir, releases):
@@ -248,8 +260,8 @@ def _write_sheet(ws, rows, ensure_format, template_ws=None):
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description="Export cksum results into an Excel template.")
-    parser.add_argument("--pkg-dir", help="path to pkg dir containing pkg.yaml")
-    parser.add_argument("--pkg-yaml", help="explicit pkg.yaml path")
+    parser.add_argument("--config", help="pkgmgr main config path")
+    parser.add_argument("--pkg-id", required=True, help="pkg id (resolved via pkg_release_root)")
     parser.add_argument("--excel", required=True, help="output xlsx path")
     parser.add_argument("--template", help="xlsx template path (optional)")
     args = parser.parse_args(argv)
@@ -258,9 +270,13 @@ def main(argv=None):
         print("[export_cksum] openpyxl is required (pip install openpyxl)")
         return 1
 
-    pkg_yaml = _load_pkg_yaml(args.pkg_dir, args.pkg_yaml)
+    pkg_dir = None
+    config_path = args.config or os.environ.get("PKGMGR_CONFIG")
+    if args.pkg_id:
+        pkg_dir = _resolve_pkg_dir(args.pkg_id, config_path=config_path)
+    pkg_yaml = _load_pkg_yaml(pkg_dir)
     if not pkg_yaml:
-        print("[export_cksum] pkg.yaml not specified; use --pkg-dir or --pkg-yaml")
+        print("[export_cksum] pkg.yaml not specified; use --pkg-id")
         return 1
     pkg_yaml = os.path.abspath(os.path.expanduser(pkg_yaml))
     pkg_dir = os.path.dirname(pkg_yaml)
@@ -275,6 +291,9 @@ def main(argv=None):
     excel_path = args.excel
     if not excel_path.lower().endswith(".xlsx"):
         excel_path = excel_path + ".xlsx"
+    if os.sep not in excel_path:
+        export_dir = os.path.join(pkg_dir, "export")
+        excel_path = os.path.join(export_dir, excel_path)
     template_path = args.template or excel_path
     template_available = template_path and os.path.exists(template_path)
     if template_available:

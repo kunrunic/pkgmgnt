@@ -3,6 +3,7 @@ import tarfile
 import os
 import sys
 import tempfile
+import shlex
 from importlib import import_module, reload
 from pathlib import Path
 
@@ -217,6 +218,21 @@ def test_update_pkg_remove_only_keeps_other_files(monkeypatch):
         cfg = {"pkg_release_root": str(pkg_root)}
 
         release.update_pkg(cfg, pkg_id)
+
+
+def test_run_actions_exports_pkgmgr_config_env(tmp_path):
+    capture_path = tmp_path / "capture.txt"
+    code = (
+        "import os, pathlib; "
+        "pathlib.Path(r'%s').write_text(os.getenv('PKGMGR_CONFIG', ''))"
+        % capture_path
+    )
+    cmd = "%s -c %s" % (sys.executable, shlex.quote(code))
+    cfg = {"actions": {"capture": [{"cmd": cmd}]}}
+
+    release.run_actions(cfg, ["capture"], config_path="/tmp/pkgmgr.yaml")
+
+    assert capture_path.read_text() == "/tmp/pkgmgr.yaml"
 
         (src_dir / "b.txt").unlink()
         out_path = release.update_pkg(cfg, pkg_id)

@@ -150,7 +150,7 @@ def collect_for_pkg(cfg, pkg_id, collectors=None):
 
 
 
-def run_actions(cfg, names, extra_args=None):
+def run_actions(cfg, names, extra_args=None, config_path=None):
     """Run configured actions by name. Returns result list."""
     actions = cfg.get("actions", {}) or {}
     if not names:
@@ -180,6 +180,9 @@ def run_actions(cfg, names, extra_args=None):
             if not cmd:
                 print("[actions] skip empty cmd for %s #%d" % (name, idx + 1))
                 continue
+            if config_path:
+                env = dict(env or {})
+                env.setdefault("PKGMGR_CONFIG", config_path)
             if extra_suffix:
                 cmd = "%s%s" % (cmd, extra_suffix)
             rc = _run_cmd(cmd, cwd=cwd, env=env, label="%s #%d" % (name, idx + 1))

@@ -161,7 +161,10 @@ def _add_point(sub):
 def build_parser():
     if argparse is None:
         raise RuntimeError("argparse not available; install argparse")
-    parser = argparse.ArgumentParser(prog="pkgmgr", description="Pkg manager CLI scaffold")
+    parser = argparse.ArgumentParser(
+        prog="pkgmgr",
+        description="Pkg manager CLI v%s" % __version__,
+    )
     # keep %(prog)s for argparse's mapping and append package version
     parser.add_argument("-V", "--version", action="version", version="%(prog)s " + __version__)
     parser.add_argument(
@@ -261,7 +264,9 @@ def _handle_actions(args):
             return 0
         _print_actions(actions)
         return 0
-    release.run_actions(cfg, [args.name], extra_args=args.action_args)
+    release.run_actions(
+        cfg, [args.name], extra_args=args.action_args, config_path=args.config
+    )
     return 0
 
 
