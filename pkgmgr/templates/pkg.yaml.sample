@@ -8,6 +8,7 @@ include:
 
 git:
   repo_root: null  # optional override; default is git rev-parse from cwd
+  # keywords are matched against commit messages; prefix is configurable in pkgmgr.yaml (git.keyword_prefix)
   keywords: []
   since: null
   until: null

@@ -2,5 +2,5 @@ design
 dist
 pkgmgr
 plugin
-test_data_root
+test_data
 tools

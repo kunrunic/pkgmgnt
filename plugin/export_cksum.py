@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 import argparse
 import os
+import re
 import subprocess
 import sys
+import time
 from copy import copy
 
 try:
@@ -94,6 +96,53 @@ def _cksum(path):
         print("[export_cksum] invalid cksum output: %s" % line)
         return None
     return parts[0], parts[1], " ".join(parts[2:])
+
+
+def _normalize_excel_template(excel_arg, pkg_dir):
+    path_template = excel_arg
+    if os.sep not in path_template:
+        export_dir = os.path.join(pkg_dir, "export")
+        path_template = os.path.join(export_dir, path_template)
+    if not path_template.lower().endswith(".xlsx"):
+        path_template = path_template + ".xlsx"
+    return path_template
+
+
+def _next_version(path_template):
+    dir_path = os.path.dirname(path_template) or "."
+    name_template = os.path.basename(path_template)
+    regex = re.escape(name_template)
+    regex = regex.replace(re.escape("{YYYYMMDD}"), r"\d{8}")
+    regex = regex.replace(re.escape("{date}"), r"\d{8}")
+    regex = regex.replace(re.escape("{version}"), r"v(\d+)")
+    regex = "^" + regex + "$"
+    max_ver = 0
+    if os.path.isdir(dir_path):
+        for name in os.listdir(dir_path):
+            m = re.match(regex, name)
+            if not m:
+                continue
+            try:
+                ver = int(m.group(1))
+            except Exception:
+                continue
+            if ver > max_ver:
+                max_ver = ver
+    return max_ver + 1
+
+
+def _resolve_excel_path(excel_arg, pkg_dir):
+    date_str = time.strftime("%Y%m%d", time.localtime())
+    template_path = _normalize_excel_template(excel_arg, pkg_dir)
+    if "{version}" in template_path:
+        version = _next_version(template_path)
+    else:
+        version = None
+    output_path = template_path
+    output_path = output_path.replace("{YYYYMMDD}", date_str).replace("{date}", date_str)
+    if version is not None:
+        output_path = output_path.replace("{version}", "v%d" % version)
+    return output_path
 
 
 def _default_styles():
@@ -262,7 +311,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Export cksum results into an Excel template.")
     parser.add_argument("--config", help="pkgmgr main config path")
     parser.add_argument("--pkg-id", required=True, help="pkg id (resolved via pkg_release_root)")
-    parser.add_argument("--excel", required=True, help="output xlsx path")
+    parser.add_argument(
+        "--excel",
+        required=True,
+        help="output xlsx path (supports {YYYYMMDD}/{date} and {version})",
+    )
     parser.add_argument("--template", help="xlsx template path (optional)")
     args = parser.parse_args(argv)
 
@@ -288,12 +341,7 @@ def main(argv=None):
         print("[export_cksum] no release entries found in %s" % pkg_yaml)
         return 1
 
-    excel_path = args.excel
-    if not excel_path.lower().endswith(".xlsx"):
-        excel_path = excel_path + ".xlsx"
-    if os.sep not in excel_path:
-        export_dir = os.path.join(pkg_dir, "export")
-        excel_path = os.path.join(export_dir, excel_path)
+    excel_path = _resolve_excel_path(args.excel, pkg_dir)
     template_path = args.template or excel_path
     template_available = template_path and os.path.exists(template_path)
     if template_available:

@@ -1,4 +1,7 @@
 pkg_release_root: ~/PKG/RELEASE
+git:
+  repo_url: "https://github.com/org/repo"
+  keyword_prefix: "DEV-CODE:"
 sources:
   - /path/to/source-A
   - /path/to/source-B
@@ -49,3 +52,10 @@ actions:
   noti_email:
     - cmd: sh noti_email.sh
       cwd: /app/script
+
+auto_actions:
+  create_pkg: []
+  update_pkg: []
+  update_pkg_release: []
+  cancel_pkg_release: []
+  close_pkg: []

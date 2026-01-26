@@ -70,10 +70,27 @@ def _add_update_pkg(sub):
     p = sub.add_parser("update-pkg", help="collect git keyword hits and checksums for a pkg")
     p.add_argument("pkg_id", help="package identifier to update")
     p.add_argument(
-        "-release",
         "--release",
         action="store_true",
         help="finalize the latest release bundle (tar + move to HISTORY)",
+    )
+    p.add_argument(
+        "--cancel",
+        help="cancel a finalized release and restore it to active (e.g. v0.0.2 or release.v0.0.2)",
+    )
+    p.add_argument(
+        "--root",
+        help="scope release/cancel to a specific release root (e.g. SYS_2)",
+    )
+    p.add_argument(
+        "--cancel-force",
+        action="store_true",
+        help="remove active release dirs before canceling",
+    )
+    p.add_argument(
+        "--cancel-clean-history",
+        action="store_true",
+        help="remove release history entries after cancel (implies --cancel-force)",
     )
     p.add_argument(
         "--config",
@@ -220,20 +237,97 @@ def _handle_snapshot(args):
 def _handle_create_pkg(args):
     cfg = config.load_main(args.config)
     release.create_pkg(cfg, args.pkg_id)
+    _run_auto_actions(cfg, "create_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "create_pkg"})
     return 0
 
 def _handle_update_pkg(args):
     cfg = config.load_main(args.config)
+    if args.cancel_clean_history and not args.cancel:
+        raise RuntimeError("--cancel-clean-history requires --cancel")
+    if args.cancel:
+        if args.release:
+            raise RuntimeError("cannot use --release with --cancel")
+        cancel_force = bool(args.cancel_force)
+        if args.cancel_clean_history:
+            cancel_force = True
+        name, roots = release.list_cancel_targets(cfg, args.pkg_id, args.cancel)
+        if not roots and not args.cancel_clean_history:
+            raise RuntimeError("release not found: %s" % name)
+        if not args.cancel_clean_history:
+            prompt = (
+                "[cancel] history will remain in web. Use --cancel-clean-history to remove it.\n"
+                "[cancel] continue without cleaning history? [y/N]: "
+            )
+            answer = input(prompt).strip().lower()
+            if answer not in ("y", "yes"):
+                print("[cancel] skipped; example:")
+                print("[cancel]  pkgmgr update-pkg %s --cancel %s --root %s --cancel-clean-history" % (args.pkg_id, name, (args.root or roots[0])))
+                return 0
+        if args.root:
+            if args.root not in roots and not args.cancel_clean_history:
+                raise RuntimeError("release not found for root %s: %s" % (args.root, name))
+        elif len(roots) > 1:
+            prompt = "[cancel] release %s found in roots: %s. Proceed cancel all? [y/N]: " % (name, ", ".join(roots))
+            answer = input(prompt).strip().lower()
+            if answer not in ("y", "yes"):
+                print("[cancel] skipped")
+                print("[cancel] single root cancel example")
+                print("[cancel]  pkgmgr update-pkg %s --cancel %s --root %s" % (args.pkg_id, name, roots[0]))
+                if len(roots) > 1:
+                    print("[cancel]  pkgmgr update-pkg %s --cancel %s --root %s" % (args.pkg_id, name, roots[1]))
+                print("[cancel] history cleanup example")
+                print("[cancel]  pkgmgr update-pkg %s --cancel %s --root %s --cancel-clean-history" % (args.pkg_id, name, roots[0]))
+                return 0
+        release.cancel_pkg_release(
+            cfg,
+            args.pkg_id,
+            args.cancel,
+            root_name=args.root,
+            force=cancel_force,
+            clean_history=bool(args.cancel_clean_history),
+        )
+        if not args.cancel_clean_history:
+            print("[cancel] history not cleaned; use --cancel-clean-history to remove release history entries")
+        _run_auto_actions(
+            cfg,
+            "cancel_pkg_release",
+            config_path=args.config,
+            context={"pkg_id": args.pkg_id, "event": "cancel_pkg_release", "release": args.cancel},
+        )
+        return 0
     if args.release:
-        release.finalize_pkg_release(cfg, args.pkg_id)
+        active_roots = release.list_active_release_roots(cfg, args.pkg_id)
+        if not active_roots:
+            print("[update-pkg] no active release; run `pkgmgr update-pkg %s` first" % args.pkg_id)
+            return 0
+        if args.root:
+            if args.root not in active_roots:
+                raise RuntimeError("active release not found for root %s" % args.root)
+            roots = [args.root]
+        else:
+            roots = active_roots
+            if len(active_roots) > 1:
+                prompt = "[release] active roots: %s. Proceed finalize all? [y/N]: " % ", ".join(active_roots)
+                answer = input(prompt).strip().lower()
+                if answer not in ("y", "yes"):
+                    print("[release] skipped; use --root to finalize a single root")
+                    print("[release] single root release example")
+                    print("[release]  pkgmgr update-pkg %s --release --root %s" % (args.pkg_id, active_roots[0]))
+                    if len(active_roots) > 1:
+                        print("[release]  pkgmgr update-pkg %s --release --root %s" % (args.pkg_id, active_roots[1]))
+                    return 0
+        release.finalize_pkg_release(cfg, args.pkg_id, roots=roots)
+        _run_auto_actions(cfg, "update_pkg_release", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "update_pkg_release"})
         return 0
     release.update_pkg(cfg, args.pkg_id)
+    _run_auto_actions(cfg, "update_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "update_pkg"})
     return 0
 
 
 def _handle_close_pkg(args):
     cfg = config.load_main(args.config)
     release.close_pkg(cfg, args.pkg_id)
+    _run_auto_actions(cfg, "close_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "close_pkg"})
     return 0
 
 
@@ -270,8 +364,16 @@ def _handle_actions(args):
     return 0
 
 
+def _run_auto_actions(cfg, event, config_path=None, context=None):
+    auto_actions = cfg.get("auto_actions") or {}
+    names = auto_actions.get(event) or []
+    if not names:
+        return []
+    return release.run_actions(cfg, names, config_path=config_path, context=context)
+
+
 def _print_actions(actions):
-    ordered = sorted(actions.keys())
+    ordered = sorted([name for name in actions.keys() if not str(name).startswith("auto_")])
     print("[actions] available:")
     for idx, name in enumerate(ordered, 1):
         entries = actions.get(name) or []
@@ -301,7 +403,11 @@ def main(argv=None):
     if not hasattr(args, "func"):
         parser.print_help()
         return 0
-    return args.func(args)
+    try:
+        return args.func(args)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

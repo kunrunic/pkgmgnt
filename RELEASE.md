@@ -40,6 +40,31 @@ pkgmgr --help  # console_script 확인
 ```
 필요하면 sdist 설치도 확인: `python -m pip install --force-reinstall dist/pkgmgr_kunrunic-<버전>.tar.gz`
 
+## update-pkg 옵션 예시
+```
+pkgmgr update-pkg TEST --release
+```
+실행 시 active root가 여러 개면 아래처럼 확인을 요청:
+```
+[release] active roots: SYS_1, SYS_2. Proceed finalize all? [y/N]:
+[release] skipped; use --root to finalize a single root
+```
+
+단일 root만 release:
+```
+pkgmgr update-pkg TEST --release --root SYS_2
+```
+
+cancel + root 지정:
+```
+pkgmgr update-pkg TEST --cancel v0.0.1 --root SYS_2
+```
+
+cancel (history 정리/BASELINE 복원 포함):
+```
+pkgmgr update-pkg TEST --cancel v0.0.1 --root SYS_2 --cancel-clean-history
+```
+
 ## 업로드 실패 시 대처
 - 403 (권한 없음): 이름이 선점됨 → `[project].name`을 고유하게 변경 후 다시 빌드/업로드
 - 400 File already exists: 같은 버전의 파일이 이미 올라감 → `__version__`을 올리고 dist를 새로 빌드

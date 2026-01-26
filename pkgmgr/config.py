@@ -26,6 +26,9 @@ except Exception:
 
 MAIN_TEMPLATE = """\
 pkg_release_root: ~/PKG/RELEASE
+git:
+  repo_url: "https://github.com/org/repo"
+  keyword_prefix: "DEV-CODE:"
 sources:
   - /path/to/source-A
   - /path/to/source-B
@@ -75,6 +78,12 @@ actions:
   noti_email:
     - cmd: sh noti_email.sh
       cwd: /app/script
+
+auto_actions:
+  create_pkg: []
+  update_pkg: []
+  update_pkg_release: []
+  close_pkg: []
 """
 
 PKG_TEMPLATE = """\
@@ -98,12 +107,20 @@ collectors:
 
 MAIN_DEFAULTS = {
     "pkg_release_root": None,
+    "git": {"repo_url": None, "keyword_prefix": None},
     "sources": [],
     "source": {"exclude": []},
     "artifacts": {"root": None, "targets": [], "exclude": []},
     "watch": {"interval_sec": 60, "on_change": []},
     "collectors": {"enabled": ["checksums"]},
     "actions": {},
+    "auto_actions": {
+        "create_pkg": [],
+        "update_pkg": [],
+        "update_pkg_release": [],
+        "cancel_pkg_release": [],
+        "close_pkg": [],
+    },
 }
 
 
@@ -167,6 +184,17 @@ def _validate_watch(watch_cfg):
     return {"interval_sec": interval, "on_change": on_change}
 
 
+def _validate_auto_actions(auto_actions):
+    cfg = auto_actions if isinstance(auto_actions, dict) else {}
+    return {
+        "create_pkg": _ensure_list_of_strings(cfg.get("create_pkg"), "auto_actions.create_pkg"),
+        "update_pkg": _ensure_list_of_strings(cfg.get("update_pkg"), "auto_actions.update_pkg"),
+        "update_pkg_release": _ensure_list_of_strings(cfg.get("update_pkg_release"), "auto_actions.update_pkg_release"),
+        "cancel_pkg_release": _ensure_list_of_strings(cfg.get("cancel_pkg_release"), "auto_actions.cancel_pkg_release"),
+        "close_pkg": _ensure_list_of_strings(cfg.get("close_pkg"), "auto_actions.close_pkg"),
+    }
+
+
 def _validate_main_config(data):
     if not isinstance(data, dict):
         raise RuntimeError("main config must be a mapping")
@@ -176,6 +204,14 @@ def _validate_main_config(data):
     if not pkg_root or not isinstance(pkg_root, (str, bytes)):
         raise RuntimeError("pkg_release_root is required (path string)")
     cfg["pkg_release_root"] = str(pkg_root)
+
+    git_cfg = cfg.get("git") if isinstance(cfg.get("git"), dict) else {}
+    repo_url = git_cfg.get("repo_url")
+    keyword_prefix = git_cfg.get("keyword_prefix")
+    cfg["git"] = {
+        "repo_url": str(repo_url) if repo_url else None,
+        "keyword_prefix": str(keyword_prefix) if keyword_prefix else None,
+    }
 
     cfg["sources"] = _ensure_list_of_strings(cfg.get("sources"), "sources")
     src = cfg.get("source") if isinstance(cfg.get("source"), dict) else {}
@@ -197,6 +233,7 @@ def _validate_main_config(data):
     }
 
     cfg["actions"] = _validate_actions(cfg.get("actions"))
+    cfg["auto_actions"] = _validate_auto_actions(cfg.get("auto_actions"))
 
     return cfg
 
@@ -359,7 +396,7 @@ def load_main(path=None, base_dir=None, allow_interactive=True):
     abs_path = os.path.abspath(path)
     if not os.path.exists(abs_path):
         raise RuntimeError("config not found: %s" % abs_path)
-    with open(abs_path, "r") as f:
+    with open(abs_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return _validate_main_config(data)
 
@@ -380,5 +417,8 @@ def describe_expected_fields():
           - cmd: shell command string (required, often relative to cwd)
           - cwd: working directory (optional)
           - env: key/value env overrides for that command only (optional)
+        auto_actions: mapping of lifecycle events to action names (create_pkg/update_pkg/update_pkg_release/close_pkg)
+        git.repo_url: base repository URL for commit links (per system)
+        git.keyword_prefix: commit prefix used with git.keywords (e.g. "DEV-CODE:")
         """
     ).strip()

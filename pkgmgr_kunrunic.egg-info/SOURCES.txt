@@ -23,9 +23,8 @@ pkgmgr_kunrunic.egg-info/not-zip-safe
 pkgmgr_kunrunic.egg-info/requires.txt
 pkgmgr_kunrunic.egg-info/top_level.txt
 plugin/export_cksum.py
+plugin/export_pkgstore.py
 plugin/export_source_review.py
-test_data_root/plugin/export_cksum.py
-test_data_root/plugin/export_source_review.py
 tests/test_cli_install.py
 tests/test_config.py
 tests/test_progress.py
