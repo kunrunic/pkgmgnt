@@ -37,6 +37,8 @@ dependencies = [
     "openpyxl>=3.1; python_version>='3.8'",
     "python-docx>=0.8.11,<1.0; python_version<'3.8'",
     "python-docx>=1.1; python_version>='3.8'",
+    "rich>=10,<13; python_version<'3.7'",
+    "rich>=13.7; python_version>='3.7'",
 ]
 dynamic = ["version"]
 

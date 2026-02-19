@@ -18,6 +18,121 @@ except Exception:
     Pt = None
     RGBColor = None
 
+try:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+except Exception:
+    OxmlElement = None
+    qn = None
+
+try:
+    from rich.console import Console
+    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
+except Exception:
+    Console = None
+    Progress = None
+    BarColumn = None
+    TaskProgressColumn = None
+    TextColumn = None
+
+
+class _ProgressBar(object):
+    def __init__(self, total, prefix):
+        self.total = max(int(total or 0), 0)
+        self.prefix = prefix
+        self.current = 0
+        self.enabled = True
+
+    def _render(self):
+        if self.total <= 0:
+            return "[%s] progress: 0/0" % self.prefix
+        width = 28
+        ratio = float(self.current) / float(self.total)
+        filled = int(width * ratio)
+        if filled > width:
+            filled = width
+        bar = "#" * filled + "-" * (width - filled)
+        pct = int(ratio * 100)
+        return "[%s] [%s] %3d%% (%d/%d)" % (
+            self.prefix,
+            bar,
+            pct,
+            self.current,
+            self.total,
+        )
+
+    def step(self, suffix=None):
+        if self.total > 0 and self.current < self.total:
+            self.current += 1
+        line = self._render()
+        if suffix:
+            line = "%s %s" % (line, suffix)
+        sys.stdout.write("\r" + line)
+        sys.stdout.flush()
+
+    def done(self, suffix=None):
+        line = self._render()
+        if suffix:
+            line = "%s %s" % (line, suffix)
+        sys.stdout.write("\r" + line + "\n")
+        sys.stdout.flush()
+
+    def log(self, message):
+        sys.stdout.write("\n%s\n" % message)
+        sys.stdout.flush()
+
+
+class _RichProgressBar(object):
+    def __init__(self, total, prefix):
+        self.total = max(int(total or 0), 0)
+        self._progress = Progress(
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(bar_width=28),
+            TaskProgressColumn(),
+            TextColumn("({task.completed}/{task.total})"),
+            TextColumn("{task.fields[status]}"),
+            console=Console(),
+            transient=False,
+        )
+        rich_total = self.total if self.total > 0 else 1
+        self._task_id = self._progress.add_task(prefix, total=rich_total, status="")
+        self._current = 0
+        self._progress.start()
+
+    def step(self, suffix=None):
+        if self.total > 0 and self._current < self.total:
+            self._current += 1
+            self._progress.update(
+                self._task_id,
+                completed=self._current,
+                status=suffix or "",
+            )
+        else:
+            self._progress.update(self._task_id, status=suffix or "")
+        self._progress.refresh()
+
+    def done(self, suffix=None):
+        target = self.total if self.total > 0 else 1
+        self._progress.update(self._task_id, completed=target, status=suffix or "")
+        self._progress.refresh()
+        self._progress.stop()
+
+    def log(self, message):
+        self._progress.console.print(message)
+
+
+def _new_progress(total, prefix):
+    if Progress is not None and not _bool_env("PKGMGR_REVIEW_NO_RICH"):
+        return _RichProgressBar(total, prefix)
+    return _ProgressBar(total, prefix)
+
+
+def _bool_env(name):
+    val = os.environ.get(name)
+    if val is None:
+        return False
+    return str(val).strip().lower() in ("1", "true", "y", "yes", "on")
+
 
 def _load_pkg_yaml(pkg_dir, pkg_yaml):
     if pkg_yaml:
@@ -146,15 +261,6 @@ def _collect_keywords(git_info):
     return sorted(keywords)
 
 
-def _select_keyword(git_info):
-    keywords = _collect_keywords(git_info)
-    if len(keywords) == 1:
-        return keywords[0], False
-    if keywords:
-        return keywords[0], True
-    return None, False
-
-
 def _parse_commit_time(value):
     if not value:
         return None
@@ -178,15 +284,31 @@ def _find_first_commit(commits, keyword):
     return sorted(matches, key=lambda c: c.get("hash") or "")[0]
 
 
-def _collect_files(commits, keyword):
-    files = set()
+def _collect_files_by_commit(commits):
+    files_by_commit = {}
     for commit in commits:
-        if keyword not in (commit.get("keywords") or []):
+        commit_hash = commit.get("hash") or commit.get("commit")
+        if not commit_hash:
             continue
+        bucket = files_by_commit.setdefault(commit_hash, set())
         for path in commit.get("files") or []:
             if path:
-                files.add(path)
-    return sorted(files)
+                bucket.add(path)
+    return files_by_commit
+
+
+def _commit_sort_key(item):
+    idx, commit = item
+    dt = _parse_commit_time(commit.get("authored_at") or commit.get("date"))
+    if dt is None:
+        return (1, idx)
+    return (0, dt, idx)
+
+
+def _order_commits(commits):
+    indexed = list(enumerate(commits))
+    indexed.sort(key=_commit_sort_key)
+    return [commit for _, commit in indexed]
 
 
 def _parse_ignore_patterns(values):
@@ -256,6 +378,47 @@ def _git_log_name_status(repo_root, path):
     ]
     result = subprocess.run(cmd, cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return _decode_output(result.stdout)
+
+
+def _git_show_name_status(repo_root, commit_hash):
+    cmd = [
+        "git",
+        "--no-pager",
+        "show",
+        "--name-status",
+        "--format=",
+        "-M",
+        "-C",
+        commit_hash,
+        "--",
+    ]
+    result = subprocess.run(cmd, cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    rows = []
+    for line in _decode_output(result.stdout).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0].strip()
+        if status.startswith("R") and len(parts) >= 3:
+            rows.append(
+                {
+                    "status": "R",
+                    "path": parts[2].strip(),
+                    "old_path": parts[1].strip(),
+                }
+            )
+            continue
+        rows.append(
+            {
+                "status": status[:1],
+                "path": parts[1].strip(),
+                "old_path": None,
+            }
+        )
+    return rows
 
 
 def _resolve_paths_with_history(repo_root, path):
@@ -358,7 +521,263 @@ def _git_diff(repo_root, start_commit, path):
         return "[export_source_review] git diff failed for %s: %s" % (path, str(exc))
 
 
-def _add_diff_table(doc, file_path, diff_text):
+def _git_commit_diff(repo_root, parent_commit, commit_hash, row):
+    status = row.get("status") or "M"
+    path = row.get("path")
+    old_path = row.get("old_path")
+    cmd = [
+        "git",
+        "--no-pager",
+        "diff",
+        "-U3",
+        parent_commit,
+        commit_hash,
+        "-M",
+        "-C",
+        "--",
+    ]
+    if status == "R" and old_path and path:
+        cmd.extend([old_path, path])
+    elif path:
+        cmd.append(path)
+    else:
+        return ""
+    try:
+        out = subprocess.check_output(cmd, cwd=repo_root, stderr=subprocess.STDOUT)
+        return _decode_output(out)
+    except Exception as exc:
+        return "[export_source_review] git diff failed for %s@%s: %s" % (
+            path or old_path or "unknown",
+            commit_hash,
+            str(exc),
+        )
+
+
+def _git_range_diff(repo_root, start_commit, end_commit, row):
+    status = row.get("status") or "M"
+    path = row.get("path")
+    old_path = row.get("old_path")
+    cmd = [
+        "git",
+        "--no-pager",
+        "diff",
+        "-U3",
+        start_commit,
+        end_commit,
+        "-M",
+        "-C",
+        "--",
+    ]
+    if status == "R" and old_path and path:
+        cmd.extend([old_path, path])
+    elif path:
+        cmd.append(path)
+    else:
+        return ""
+    try:
+        out = subprocess.check_output(cmd, cwd=repo_root, stderr=subprocess.STDOUT)
+        return _decode_output(out)
+    except Exception as exc:
+        return "[export_source_review] git diff failed for %s@%s..%s: %s" % (
+            path or old_path or "unknown",
+            start_commit,
+            end_commit,
+            str(exc),
+        )
+
+
+def _is_pure_rename(repo_root, start_commit, end_commit, row):
+    if (row.get("status") or "") != "R":
+        return False
+    path = row.get("path")
+    old_path = row.get("old_path")
+    if not path or not old_path:
+        return False
+    cmd = [
+        "git",
+        "--no-pager",
+        "diff",
+        "--name-status",
+        "-M",
+        start_commit,
+        end_commit,
+        "--",
+        old_path,
+        path,
+    ]
+    try:
+        out = subprocess.check_output(cmd, cwd=repo_root, stderr=subprocess.STDOUT)
+    except Exception:
+        return False
+    lines = [line.strip() for line in _decode_output(out).splitlines() if line.strip()]
+    if len(lines) != 1:
+        return False
+    parts = lines[0].split("\t")
+    if len(parts) < 3:
+        return False
+    return parts[0].startswith("R100")
+
+
+def _safe_anchor_name(name, idx):
+    cleaned = []
+    for ch in (name or ""):
+        if ch.isalnum():
+            cleaned.append(ch)
+        else:
+            cleaned.append("_")
+    text = "".join(cleaned).strip("_")
+    if not text:
+        text = "entry"
+    return "toc_%d_%s" % (idx, text[:40])
+
+
+def _add_bookmark(paragraph, name, bookmark_id):
+    if OxmlElement is None or qn is None:
+        return
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+    paragraph._p.insert(0, start)
+    paragraph._p.append(end)
+
+
+def _add_internal_link(paragraph, text, anchor):
+    if OxmlElement is None or qn is None:
+        paragraph.add_run(text)
+        return
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("w:anchor"), anchor)
+    run = OxmlElement("w:r")
+    rpr = OxmlElement("w:rPr")
+    rstyle = OxmlElement("w:rStyle")
+    rstyle.set(qn("w:val"), "Hyperlink")
+    rpr.append(rstyle)
+    run.append(rpr)
+    t = OxmlElement("w:t")
+    t.text = text
+    run.append(t)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def _add_toc_field(paragraph, levels="1-3"):
+    if OxmlElement is None or qn is None:
+        paragraph.add_run("목차를 업데이트하려면 Word에서 필드 업데이트를 실행하세요.")
+        return
+    p = paragraph._p
+
+    r_begin = OxmlElement("w:r")
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    r_begin.append(fld_begin)
+
+    r_instr = OxmlElement("w:r")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = 'TOC \\o "%s" \\h \\z \\u' % levels
+    r_instr.append(instr)
+
+    r_sep = OxmlElement("w:r")
+    fld_sep = OxmlElement("w:fldChar")
+    fld_sep.set(qn("w:fldCharType"), "separate")
+    r_sep.append(fld_sep)
+
+    r_hint = OxmlElement("w:r")
+    hint_text = OxmlElement("w:t")
+    hint_text.text = "목차는 Word에서 필드 업데이트 시 채워집니다."
+    r_hint.append(hint_text)
+
+    r_end = OxmlElement("w:r")
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    r_end.append(fld_end)
+
+    p.append(r_begin)
+    p.append(r_instr)
+    p.append(r_sep)
+    p.append(r_hint)
+    p.append(r_end)
+
+
+def _folder_levels(path, max_depth=3):
+    if not path:
+        return []
+    parts = [p for p in str(path).split("/") if p]
+    if len(parts) <= 1:
+        return []
+    return parts[:-1][:max_depth]
+
+
+def _build_file_spans(ordered_commits, repo_root, files_by_commit):
+    spans = {}
+    for commit in ordered_commits:
+        commit_hash = commit.get("hash") or commit.get("commit")
+        if not commit_hash:
+            continue
+        allowed_paths = set(files_by_commit.get(commit_hash) or [])
+        parent_commit = _git_parent(repo_root, commit_hash)
+        commit_rows = _git_show_name_status(repo_root, commit_hash)
+        if not commit_rows:
+            fallback_paths = sorted(allowed_paths)
+            commit_rows = [
+                {
+                    "status": "M",
+                    "path": path,
+                    "old_path": None,
+                }
+                for path in fallback_paths
+            ]
+        for row in commit_rows:
+            status = row.get("status") or "M"
+            path = row.get("path")
+            old_path = row.get("old_path")
+            # Keep only files that were actually collected into update JSON.
+            # This prevents unrelated paths in the same commit from being exported.
+            if allowed_paths:
+                if (path not in allowed_paths) and (old_path not in allowed_paths):
+                    continue
+            if status == "R" and old_path and path and old_path in spans and old_path != path:
+                prev = spans.pop(old_path)
+                existing = spans.get(path)
+                if existing:
+                    if prev["start_commit"] != prev["end_commit"]:
+                        existing["start_commit"] = prev["start_commit"]
+                    existing["status"] = status
+                    existing["old_path"] = old_path
+                    existing["path"] = path
+                    existing["end_commit"] = commit_hash
+                    continue
+                prev["path"] = path
+                prev["old_path"] = old_path
+                prev["status"] = status
+                prev["end_commit"] = commit_hash
+                spans[path] = prev
+                continue
+            file_key = path or old_path
+            if not file_key:
+                continue
+            existing = spans.get(file_key)
+            if not existing:
+                spans[file_key] = {
+                    "path": path or old_path,
+                    "old_path": old_path,
+                    "status": status,
+                    "introduced_by_add": status == "A",
+                    "start_commit": parent_commit,
+                    "end_commit": commit_hash,
+                }
+                continue
+            existing["path"] = path or existing["path"]
+            existing["old_path"] = old_path or existing["old_path"]
+            existing["status"] = status
+            existing["end_commit"] = commit_hash
+    items = [spans[k] for k in sorted(spans.keys())]
+    return items
+
+
+def _add_diff_table(doc, file_path, diff_text, status=None, commit_hash=None, old_path=None):
     table = doc.add_table(rows=2, cols=1)
     try:
         table.style = "Table Grid"
@@ -397,6 +816,10 @@ def main(argv=None):
     parser.add_argument("--pkg-id", required=True, help="pkg id (used to locate latest update JSON)")
     parser.add_argument("--docx", required=True, help="output docx path")
     parser.add_argument("--ignore", action="append", help="glob patterns to ignore")
+    parser.add_argument(
+        "--ignored-log",
+        help="optional path to write ignored file list (default: no file)",
+    )
     args = parser.parse_args(argv)
 
     if Document is None:
@@ -419,67 +842,146 @@ def main(argv=None):
     data = _read_update_json(update_path)
     git_info = data.get("git") or {}
     commits = git_info.get("commits") or []
-    keyword, multi_keywords = _select_keyword(git_info)
-    if not keyword:
+    keywords = _collect_keywords(git_info)
+    if not keywords:
         print("[export_source_review] keyword not found in update json for pkg: %s" % args.pkg_id)
         return 1
-    if multi_keywords:
-        print("[export_source_review] multiple keywords found; using %s" % keyword)
+    ordered_commits = _order_commits(commits)
+    if not ordered_commits:
+        print("[export_source_review] commit list is empty for pkg: %s" % args.pkg_id)
+        return 1
 
     repo_root = _resolve_repo_root(pkg_cfg, pkg_dir, data)
     if not repo_root:
         print("[export_source_review] repo root not found for pkg: %s" % args.pkg_id)
         return 1
 
-    commit_hash = _git_log_first_commit(repo_root, keyword)
-    if not commit_hash:
-        first_commit = _find_first_commit(commits, keyword)
-        if not first_commit:
-            print("[export_source_review] no commits found for keyword: %s" % keyword)
-            return 1
-        commit_hash = first_commit.get("hash") or first_commit.get("commit")
-    if not commit_hash:
-        print("[export_source_review] commit hash missing for keyword: %s" % keyword)
-        return 1
-    start_commit = _git_parent(repo_root, commit_hash)
-    file_list = _collect_files(commits, keyword)
-    if not file_list:
-        git_files = list(((data.get("checksums") or {}).get("git_files") or {}).keys())
-        for path in git_files:
-            if path.startswith(repo_root):
-                file_list.append(os.path.relpath(path, repo_root))
-        file_list = sorted(set(file_list))
-
-    if not file_list:
-        print("[export_source_review] no files found for keyword: %s" % keyword)
-        return 1
-
     ignore_patterns = _parse_ignore_patterns([args.ignore, os.environ.get("PKGMGR_REVIEW_IGNORE")])
+    files_by_commit = _collect_files_by_commit(ordered_commits)
+    work_items = _build_file_spans(ordered_commits, repo_root, files_by_commit)
+    skip_new_source = _bool_env("PKGMGR_REVIEW_SKIP_NEW_FILE_SOURCE")
 
     doc = Document()
     doc.add_paragraph("Source Review Export")
-    doc.add_paragraph("Keyword: %s" % keyword)
-    doc.add_paragraph("Range: %s..HEAD" % start_commit)
+    doc.add_paragraph("목차")
+    _add_toc_field(doc.add_paragraph(""), levels="1-3")
+    doc.add_paragraph("")
+    doc.add_paragraph("Keywords: %s" % ", ".join(keywords))
+    doc.add_paragraph("Commit Count: %d" % len(ordered_commits))
+    doc.add_paragraph("Entry Count: %d" % len(work_items))
     doc.add_paragraph("Update JSON: %s" % update_path)
     doc.add_paragraph("")
+    rendered = 0
+    skipped = 0
+    skipped_paths = []
+    # Default: show ignored logs. Set PKGMGR_REVIEW_QUIET_SKIP=1 to suppress.
+    verbose_skip = True
+    if _bool_env("PKGMGR_REVIEW_QUIET_SKIP"):
+        verbose_skip = False
+    elif os.environ.get("PKGMGR_REVIEW_VERBOSE_SKIP") is not None:
+        verbose_skip = _bool_env("PKGMGR_REVIEW_VERBOSE_SKIP")
+    progress = _new_progress(len(work_items), "export_source_review")
+    current_levels = []
 
-    for path in file_list:
-        if _is_ignored(path, repo_root, ignore_patterns):
-            print("[export_source_review] skip (ignored): %s" % path)
-            continue
-        head_path = _pick_head_path(repo_root, path)
-        if not head_path:
-            print("[export_source_review] skip (file deleted or untracked in HEAD): %s" % path)
-            continue
-        if _is_ignored(head_path, repo_root, ignore_patterns):
-            print("[export_source_review] skip (ignored): %s" % head_path)
-            continue
-        diff_text = _git_diff(repo_root, start_commit, head_path)
-        _add_diff_table(doc, head_path, diff_text)
+    for item in work_items:
+        path = item.get("path")
+        old_path = item.get("old_path")
+        status = item.get("status") or "M"
+        introduced_by_add = bool(item.get("introduced_by_add"))
+        start_commit = item.get("start_commit")
+        end_commit = item.get("end_commit")
 
-    out_path = args.docx
-    if not out_path.lower().endswith(".docx"):
-        out_path = out_path + ".docx"
+        if path and _is_ignored(path, repo_root, ignore_patterns):
+            skipped += 1
+            skipped_paths.append(path)
+            progress.step("skip=%d render=%d" % (skipped, rendered))
+            if verbose_skip:
+                progress.log("[export_source_review] skip (ignored): %s" % path)
+            continue
+        if old_path and _is_ignored(old_path, repo_root, ignore_patterns):
+            skipped += 1
+            skipped_paths.append(old_path)
+            progress.step("skip=%d render=%d" % (skipped, rendered))
+            if verbose_skip:
+                progress.log("[export_source_review] skip (ignored): %s" % old_path)
+            continue
+        file_name = path or old_path or "(unknown)"
+        levels = _folder_levels(file_name, max_depth=3)
+        for idx, level_name in enumerate(levels):
+            if idx < len(current_levels) and current_levels[idx] == level_name:
+                continue
+            current_levels = current_levels[:idx]
+            h = doc.add_paragraph(level_name)
+            try:
+                h.style = "Heading %d" % (idx + 1)
+            except Exception:
+                pass
+            current_levels.append(level_name)
+
+        diff_row = {"status": status, "path": path, "old_path": old_path}
+        if status == "R" and _is_pure_rename(repo_root, start_commit, end_commit, diff_row):
+            diff_text = "파일 이름 변경"
+        elif introduced_by_add and skip_new_source:
+            diff_text = "신규 파일 소스코드 생략"
+        else:
+            diff_text = _git_range_diff(repo_root, start_commit, end_commit, diff_row)
+        _add_diff_table(
+            doc,
+            file_name,
+            diff_text,
+            status=status,
+            commit_hash=end_commit,
+            old_path=old_path,
+        )
+        rendered += 1
+        progress.step("skip=%d render=%d" % (skipped, rendered))
+
+    if rendered == 0:
+        progress.done("skip=%d render=%d" % (skipped, rendered))
+        print("[export_source_review] no diff entries rendered; check ignore patterns or commit data")
+        return 1
+    progress.done("skip=%d render=%d" % (skipped, rendered))
+    out_name = args.docx
+    if not out_name.lower().endswith(".docx"):
+        out_name = out_name + ".docx"
+    finalize_total = max(rendered + 1, 1)
+    finalize_progress = _new_progress(finalize_total, "writing-%s" % os.path.basename(out_name))
+    for _ in range(rendered):
+        finalize_progress.step("prepare")
+    if _bool_env("PKGMGR_REVIEW_QUIET_SKIP"):
+        print("[export_source_review] summary: rendered=%d skipped=%d" % (rendered, skipped))
+    if skipped_paths:
+        unique_skipped = sorted(set(skipped_paths))
+        if _bool_env("PKGMGR_REVIEW_QUIET_SKIP"):
+            print(
+                "[export_source_review] ignored unique=%d total=%d duplicate=%d"
+                % (len(unique_skipped), len(skipped_paths), len(skipped_paths) - len(unique_skipped))
+            )
+            preview = unique_skipped[:10]
+            print("[export_source_review] ignored sample (%d/%d):" % (len(preview), len(unique_skipped)))
+            for item in preview:
+                print("  - %s" % item)
+            counts = {}
+            for item in skipped_paths:
+                counts[item] = counts.get(item, 0) + 1
+            repeated = [(path, cnt) for path, cnt in counts.items() if cnt > 1]
+            repeated.sort(key=lambda x: (-x[1], x[0]))
+            if repeated:
+                print("[export_source_review] ignored repeated (%d):" % len(repeated))
+                for path, cnt in repeated[:10]:
+                    print("  - %s (x%d)" % (path, cnt))
+        log_path = args.ignored_log
+        if log_path:
+            log_path = os.path.abspath(os.path.expanduser(log_path))
+            log_dir = os.path.dirname(log_path)
+            if log_dir and not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            with open(log_path, "w") as f:
+                for item in unique_skipped:
+                    f.write(item + "\n")
+            print("[export_source_review] ignored list wrote %s" % log_path)
+
+    out_path = out_name
     config_path = args.config or os.environ.get("PKGMGR_CONFIG")
     if os.sep not in out_path:
         base_dir = _resolve_pkg_output_dir(args.pkg_id, pkg_cfg, config_path=config_path)
@@ -490,8 +992,10 @@ def main(argv=None):
     out_dir = os.path.dirname(os.path.abspath(out_path))
     if out_dir and not os.path.exists(out_dir):
         os.makedirs(out_dir)
+    finalize_progress.step("writing")
     doc.save(out_path)
-    print("[export_source_review] wrote %s" % out_path)
+    finalize_progress.done("done")
+    print("[export_source_review] wrote %s" % out_path, flush=True)
     return 0
 
 
