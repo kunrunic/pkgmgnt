@@ -1,5 +1,6 @@
 pkg_release_root: ~/PKG/RELEASE
 git:
+  repo_root: null  # 입력하는 경우 create-pkg 시 해당 정보로 자동 설정됩니다.
   repo_url: "https://github.com/org/repo"
   keyword_prefix: "DEV-CODE:"
 sources:
@@ -58,4 +59,5 @@ auto_actions:
   update_pkg: []
   update_pkg_release: []
   cancel_pkg_release: []
+  delete_pkg: []
   close_pkg: []

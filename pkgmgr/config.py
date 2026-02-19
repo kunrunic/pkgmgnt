@@ -27,6 +27,7 @@ except Exception:
 MAIN_TEMPLATE = """\
 pkg_release_root: ~/PKG/RELEASE
 git:
+  repo_root: null  # optional override; default is git rev-parse from cwd
   repo_url: "https://github.com/org/repo"
   keyword_prefix: "DEV-CODE:"
 sources:
@@ -107,7 +108,7 @@ collectors:
 
 MAIN_DEFAULTS = {
     "pkg_release_root": None,
-    "git": {"repo_url": None, "keyword_prefix": None},
+    "git": {"repo_root": None, "repo_url": None, "keyword_prefix": None},
     "sources": [],
     "source": {"exclude": []},
     "artifacts": {"root": None, "targets": [], "exclude": []},
@@ -120,6 +121,7 @@ MAIN_DEFAULTS = {
         "update_pkg_release": [],
         "cancel_pkg_release": [],
         "close_pkg": [],
+        "delete_pkg": [],
     },
 }
 
@@ -192,6 +194,7 @@ def _validate_auto_actions(auto_actions):
         "update_pkg_release": _ensure_list_of_strings(cfg.get("update_pkg_release"), "auto_actions.update_pkg_release"),
         "cancel_pkg_release": _ensure_list_of_strings(cfg.get("cancel_pkg_release"), "auto_actions.cancel_pkg_release"),
         "close_pkg": _ensure_list_of_strings(cfg.get("close_pkg"), "auto_actions.close_pkg"),
+        "delete_pkg": _ensure_list_of_strings(cfg.get("delete_pkg"), "auto_actions.delete_pkg"),
     }
 
 
@@ -206,9 +209,11 @@ def _validate_main_config(data):
     cfg["pkg_release_root"] = str(pkg_root)
 
     git_cfg = cfg.get("git") if isinstance(cfg.get("git"), dict) else {}
+    repo_root = git_cfg.get("repo_root")
     repo_url = git_cfg.get("repo_url")
     keyword_prefix = git_cfg.get("keyword_prefix")
     cfg["git"] = {
+        "repo_root": str(repo_root) if repo_root else None,
         "repo_url": str(repo_url) if repo_url else None,
         "keyword_prefix": str(keyword_prefix) if keyword_prefix else None,
     }
@@ -280,7 +285,7 @@ def write_pkg_template(path, pkg_id=None, pkg_root=None, include_releases=None, 
 
     if pkg_id is None or pkg_root is None or yaml is None:
         content = _load_template_file("pkg.yaml.sample", PKG_TEMPLATE)
-        with open(target, "w") as f:
+        with open(target, "w", encoding="euc-kr") as f:
             f.write(content)
     else:
         data = {
@@ -294,8 +299,17 @@ def write_pkg_template(path, pkg_id=None, pkg_root=None, include_releases=None, 
             },
             "collectors": {"enabled": collectors_enabled or ["checksums"]},
         }
-        with open(target, "w") as f:
-            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=True)
+        dumped = yaml.safe_dump(data, allow_unicode=True, sort_keys=True)
+        lines = dumped.splitlines()
+        out_lines = []
+        for line in lines:
+            out_lines.append(line)
+            if line.strip().startswith("repo_root:"):
+                out_lines.append("  # pkgmgr.yaml 의 repo_root 값으로 자동 생성됩니다.")
+            if line.strip().startswith("releases:"):
+                out_lines.append("  # update-pkg 실행 시 추가 항목은 수동으로 include.releases에 입력 필요")
+        with open(target, "w", encoding="euc-kr") as f:
+            f.write("\n".join(out_lines) + "\n")
     print("[create-pkg] wrote pkg config to %s" % target)
 
 
@@ -417,7 +431,8 @@ def describe_expected_fields():
           - cmd: shell command string (required, often relative to cwd)
           - cwd: working directory (optional)
           - env: key/value env overrides for that command only (optional)
-        auto_actions: mapping of lifecycle events to action names (create_pkg/update_pkg/update_pkg_release/close_pkg)
+        auto_actions: mapping of lifecycle events to action names (create_pkg/update_pkg/update_pkg_release/close_pkg/delete_pkg)
+        git.repo_root: override repo root for git scanning (optional)
         git.repo_url: base repository URL for commit links (per system)
         git.keyword_prefix: commit prefix used with git.keywords (e.g. "DEV-CODE:")
         """

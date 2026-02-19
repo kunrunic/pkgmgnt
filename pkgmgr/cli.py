@@ -111,6 +111,17 @@ def _add_close_pkg(sub):
     p.set_defaults(func=_handle_close_pkg)
 
 
+def _add_delete_pkg(sub):
+    p = sub.add_parser("delete-pkg", help="delete a closed pkg from local state")
+    p.add_argument("pkg_id", help="package identifier to delete (closed only)")
+    p.add_argument(
+        "--config",
+        default=None,
+        help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
+    )
+    p.set_defaults(func=_handle_delete_pkg)
+
+
 def _add_watch(sub):
     p = sub.add_parser("watch", help="start watcher/daemon to monitor pkgs")
     p.add_argument(
@@ -196,6 +207,7 @@ def build_parser():
     _add_create_pkg(sub)
     _add_update_pkg(sub)
     _add_close_pkg(sub)
+    _add_delete_pkg(sub)
     _add_actions(sub)
     return parser
 
@@ -328,6 +340,13 @@ def _handle_close_pkg(args):
     cfg = config.load_main(args.config)
     release.close_pkg(cfg, args.pkg_id)
     _run_auto_actions(cfg, "close_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "close_pkg"})
+    return 0
+
+
+def _handle_delete_pkg(args):
+    cfg = config.load_main(args.config)
+    release.delete_pkg(cfg, args.pkg_id)
+    _run_auto_actions(cfg, "delete_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "delete_pkg"})
     return 0
 
 

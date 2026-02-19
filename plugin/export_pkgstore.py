@@ -61,6 +61,21 @@ def _copy_export_dirs(release_root, dest_state_root, allowed_pkg_ids=None):
         _copy_tree(export_dir, dest_export)
 
 
+def _prune_removed_pkgs(dest_state_root, allowed_pkg_ids):
+    if allowed_pkg_ids is None:
+        return
+    pkg_root = os.path.join(dest_state_root, "pkg")
+    if not os.path.isdir(pkg_root):
+        return
+    for name in os.listdir(pkg_root):
+        pkg_dir = os.path.join(pkg_root, name)
+        if not os.path.isdir(pkg_dir):
+            continue
+        if name in allowed_pkg_ids:
+            continue
+        shutil.rmtree(pkg_dir)
+
+
 def _prune_empty_dirs(root_dir):
     for base, dirs, files in os.walk(root_dir, topdown=False):
         if files:
@@ -162,11 +177,12 @@ def export_pkgstore(src, dest, clean=False, release_root=None, system_name=None)
     if not os.path.exists(dest):
         os.makedirs(dest)
     _copy_tree(src, dest)
+    allowed_pkg_ids = _list_pkg_ids(src)
     if release_root:
-        allowed_pkg_ids = _list_pkg_ids(src)
         _copy_export_dirs(release_root, dest, allowed_pkg_ids=allowed_pkg_ids)
         _copy_release_tars(release_root, dest, allowed_pkg_ids=allowed_pkg_ids)
         _copy_readme_files(release_root, dest, system_name, allowed_pkg_ids=allowed_pkg_ids)
+    _prune_removed_pkgs(dest, allowed_pkg_ids)
 
 
 def main(argv=None):
@@ -179,6 +195,17 @@ def main(argv=None):
     parser.add_argument("--push", help="rsync target like user@host (pushes to remote)")
     parser.add_argument("--remote-dest", default="~/data/pkgstore", help="remote pkgstore root (default: ~/data/pkgstore)")
     parser.add_argument("--identity", help="ssh private key path for rsync (optional)")
+    parser.add_argument(
+        "--rsync-exclude",
+        action="append",
+        default=[],
+        help="rsync exclude pattern (repeatable). Default excludes can be disabled with --no-default-excludes",
+    )
+    parser.add_argument(
+        "--no-default-excludes",
+        action="store_true",
+        help="disable default rsync excludes that protect local-only files",
+    )
     parser.add_argument("--debug", action="store_true", help="print debug info about source contents")
     args = parser.parse_args(argv)
     if not args.dest and not args.push:
@@ -214,6 +241,9 @@ def main(argv=None):
     print("[export_pkgstore] synced %s -> %s" % (src, dest_state))
 
     if args.push:
+        default_excludes = ["pkg/*/edr/**"]
+        rsync_excludes = [] if args.no_default_excludes else list(default_excludes)
+        rsync_excludes.extend(args.rsync_exclude or [])
         remote_root = args.remote_dest.rstrip("/")
         if system_name:
             remote_state = "%s/state/systems/%s" % (remote_root, system_name)
@@ -224,6 +254,8 @@ def main(argv=None):
             ["ssh", args.push, "mkdir", "-p", remote_state]
         )
         rsync_cmd = ["rsync", "-avzc", "--delete"]
+        for pattern in rsync_excludes:
+            rsync_cmd.extend(["--exclude", pattern])
         if args.identity:
             rsync_cmd.extend(["-e", "ssh -i %s" % args.identity])
         rsync_cmd.extend([src_dir, "%s:%s" % (args.push, remote_state)])

@@ -84,6 +84,24 @@ def _write_pkg_state(pkg_id, status, extra=None):
     return state
 
 
+def _touch_pkg_state_updated(pkg_id, updated_at=None):
+    now = updated_at or _timestamp()
+    existing = _load_pkg_state(pkg_id) or {}
+    state = {
+        "pkg_id": str(pkg_id),
+        "status": existing.get("status") or "unknown",
+        "opened_at": existing.get("opened_at"),
+        "updated_at": now,
+        "closed_at": existing.get("closed_at"),
+    }
+    state_dir = _pkg_state_dir(pkg_id)
+    if not os.path.exists(state_dir):
+        os.makedirs(state_dir)
+    with open(_pkg_state_path(pkg_id), "w") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+    return state
+
+
 def _parse_ts(value):
     if not value:
         return 0
@@ -107,6 +125,27 @@ def _load_pkg_summary():
     except Exception:
         pass
     return {"generated_at": _timestamp(), "pkgs": []}
+
+
+def _remove_pkg_summary_entry(pkg_id):
+    data = _load_pkg_summary()
+    pkgs = data.get("pkgs") or []
+    cleaned = []
+    for entry in pkgs:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("pkg_id") == str(pkg_id):
+            continue
+        cleaned.append(entry)
+    data = {
+        "generated_at": _timestamp(),
+        "pkgs": cleaned,
+    }
+    path = _pkg_summary_path()
+    if not os.path.exists(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+    with open(path, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def _find_latest_update(pkg_id):
@@ -218,12 +257,60 @@ def pkg_state(pkg_id):
     return _load_pkg_state(pkg_id)
 
 
+def _skip_release_entry(name):
+    upper = str(name or "").upper()
+    if not upper:
+        return True
+    if upper.startswith("BACKUP"):
+        return True
+    if upper in ("HISTORY",):
+        return True
+    if str(name).startswith("."):
+        return True
+    return False
+
+
+def _discover_release_includes(pkg_root):
+    if not os.path.isdir(pkg_root):
+        return []
+    includes = []
+    for entry in sorted(os.listdir(pkg_root)):
+        if _skip_release_entry(entry):
+            continue
+        abspath = os.path.join(pkg_root, entry)
+        if os.path.isfile(abspath):
+            includes.append(entry)
+            continue
+        if not os.path.isdir(abspath):
+            continue
+        try:
+            children = sorted(os.listdir(abspath))
+        except Exception:
+            continue
+        added = False
+        for child in children:
+            if _skip_release_entry(child):
+                continue
+            includes.append(os.path.join(entry, child))
+            added = True
+        if not added:
+            includes.append(entry)
+    return includes
+
+
 def create_pkg(cfg, pkg_id):
     """Create pkg directory and write pkg.yaml template."""
     dest = _pkg_dir(cfg, pkg_id)
     if not os.path.exists(dest):
         os.makedirs(dest)
     template_path = os.path.join(dest, "pkg.yaml")
+
+    def _existing_pkg_status(path):
+        data = _read_yaml_path(path) or {}
+        if not isinstance(data, dict):
+            return None
+        pkg_info = data.get("pkg") if isinstance(data.get("pkg"), dict) else {}
+        return pkg_info.get("status")
 
     def _should_write_template(path):
         if not os.path.exists(path):
@@ -235,17 +322,34 @@ def create_pkg(cfg, pkg_id):
         ans = input(prompt).strip().lower()
         return ans in ("y", "yes")
 
-    if not _should_write_template(template_path):
-        print("[create-pkg] kept existing pkg.yaml; no changes made")
-        return
+    if os.path.exists(template_path):
+        status = _existing_pkg_status(template_path)
+        if status == "deleted":
+            prompt = "[create-pkg] pkg.yaml is deleted; reopen and set status=open? [Y/n]: "
+            if not sys.stdin.isatty():
+                print(prompt + "non-tty -> keeping deleted")
+                return
+            ans = input(prompt).strip().lower()
+            if ans in ("", "y", "yes"):
+                _update_pkg_yaml_status(dest, "open")
+                _write_pkg_state(pkg_id, "open")
+                _update_pkg_summary(pkg_id)
+                print("[create-pkg] reopened %s (status=open)" % dest)
+            else:
+                print("[create-pkg] kept deleted status for %s" % dest)
+            return
+        if not _should_write_template(template_path):
+            print("[create-pkg] kept existing pkg.yaml; no changes made")
+            return
 
     git_cfg = cfg.get("git") or {}
     collectors_enabled = (cfg.get("collectors") or {}).get("enabled") or ["checksums"]
+    include_releases = _discover_release_includes(dest)
     config.write_pkg_template(
         template_path,
         pkg_id=pkg_id,
         pkg_root=dest,
-        include_releases=[],
+        include_releases=include_releases,
         git_cfg=git_cfg,
         collectors_enabled=collectors_enabled,
     )
@@ -270,8 +374,24 @@ def close_pkg(cfg, pkg_id):
     with open(marker, "w") as f:
         f.write("closed\n")
     _write_pkg_state(pkg_id, "closed")
+    _update_pkg_yaml_status(dest, "closed")
     _update_pkg_summary(pkg_id)
     print("[close-pkg] marked closed: %s" % dest)
+
+
+def delete_pkg(cfg, pkg_id):
+    """Delete pkg state data (closed only)."""
+    state = _load_pkg_state(pkg_id) or {}
+    status = state.get("status")
+    if status != "closed":
+        raise RuntimeError("delete-pkg requires closed status; run close-pkg first")
+    pkg_dir = _pkg_dir(cfg, pkg_id)
+    pkg_state_dir = _pkg_state_dir(pkg_id)
+    if os.path.isdir(pkg_state_dir):
+        shutil.rmtree(pkg_state_dir)
+    _remove_pkg_summary_entry(pkg_id)
+    _update_pkg_yaml_status(pkg_dir, "deleted")
+    print("[delete-pkg] removed state for %s" % pkg_id)
 
 
 def collect_for_pkg(cfg, pkg_id, collectors=None):
@@ -619,6 +739,43 @@ def _read_json_path(path):
                 return json.load(f)
         except Exception:
             return None
+
+
+def _read_yaml_path(path):
+    if config.yaml is None:
+        return None
+    for enc in ("utf-8", "euc-kr", "cp949"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return config.yaml.safe_load(f) or {}
+        except Exception:
+            continue
+    return None
+
+
+def _write_yaml_path(path, data):
+    if config.yaml is None:
+        return False
+    try:
+        dumped = config.yaml.safe_dump(data, allow_unicode=True, sort_keys=True)
+        with open(path, "w", encoding="euc-kr") as f:
+            f.write(dumped)
+        return True
+    except Exception:
+        return False
+
+
+def _update_pkg_yaml_status(pkg_dir, status):
+    cfg_path = os.path.join(pkg_dir, "pkg.yaml")
+    if not os.path.isfile(cfg_path):
+        return False
+    data = _read_yaml_path(cfg_path)
+    if not isinstance(data, dict):
+        return False
+    pkg = data.get("pkg") if isinstance(data.get("pkg"), dict) else {}
+    pkg["status"] = status
+    data["pkg"] = pkg
+    return _write_yaml_path(cfg_path, data)
 
 
 def _read_note_text(path):
@@ -1379,6 +1536,7 @@ def update_pkg(cfg, pkg_id):
     with open(out_path, "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
     print("[update-pkg] wrote %s" % out_path)
+    _touch_pkg_state_updated(pkg_id)
     _write_release_history(pkg_id, ts, release_bundle)
     _update_pkg_summary(pkg_id)
     return out_path
