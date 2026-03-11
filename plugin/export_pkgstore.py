@@ -10,6 +10,7 @@ import tempfile
 import re
 
 _RSYNC_SUPPORTS_INFO = None
+_SHARED_STATE_FILES = ("pkg-summary.json", "baseline.json")
 
 try:
     from rich.console import Console
@@ -178,7 +179,7 @@ def _parse_pkg_ids(values):
 
 
 def _copy_state_for_pkgs(src_state_root, dest_state_root, pkg_ids):
-    stats = {"files": 0, "dirs": 0, "pkg": 0, "missing": []}
+    stats = {"files": 0, "dirs": 0, "pkg": 0, "missing": [], "present": []}
     pkg_src_root = os.path.join(src_state_root, "pkg")
     pkg_dest_root = os.path.join(dest_state_root, "pkg")
     if not os.path.exists(pkg_dest_root):
@@ -192,8 +193,19 @@ def _copy_state_for_pkgs(src_state_root, dest_state_root, pkg_ids):
         dest_pkg = os.path.join(pkg_dest_root, pkg_id)
         files_copied, dirs_created = _copy_tree(src_pkg, dest_pkg)
         stats["pkg"] += 1
+        stats["present"].append(pkg_id)
         stats["files"] += files_copied
         stats["dirs"] += dirs_created
+    for name in _SHARED_STATE_FILES:
+        src_path = os.path.join(src_state_root, name)
+        if not os.path.isfile(src_path):
+            continue
+        if not os.path.exists(dest_state_root):
+            os.makedirs(dest_state_root)
+            stats["dirs"] += 1
+        dest_path = os.path.join(dest_state_root, name)
+        shutil.copy2(src_path, dest_path)
+        stats["files"] += 1
     return stats
 
 
@@ -204,6 +216,14 @@ def _build_rsync_cmd(src_dir, remote_target, excludes, identity=None):
     if identity:
         rsync_cmd.extend(["-e", "ssh -i %s" % identity])
     rsync_cmd.extend([src_dir.rstrip("/") + "/", remote_target])
+    return rsync_cmd
+
+
+def _build_rsync_file_cmd(src_file, remote_target_file, identity=None):
+    rsync_cmd = ["rsync", "-avzc"]
+    if identity:
+        rsync_cmd.extend(["-e", "ssh -i %s" % identity])
+    rsync_cmd.extend([src_file, remote_target_file])
     return rsync_cmd
 
 
@@ -461,7 +481,9 @@ def export_pkgstore(src, dest, clean=False, release_root=None, system_name=None,
             )
         if scoped["missing"]:
             ui.log("[export_pkgstore] missing pkg in state: %s" % ", ".join(sorted(scoped["missing"])))
-        allowed_pkg_ids = list(selected_pkg_ids)
+        # Limit release-root copy to package ids that still exist in state.
+        # This prevents recreate of deleted pkg dirs via export/readme artifacts.
+        allowed_pkg_ids = list(scoped.get("present") or [])
     else:
         state_files, state_dirs = _copy_tree(src, dest)
         if verbose:
@@ -596,14 +618,19 @@ def main(argv=None):
             if selected_pkg_ids:
                 rsync_summary = {"total_files": 0, "transferred_files": 0, "deleted": 0, "warnings": []}
                 pushed_count = 0
+                removed_missing_pkg_count = 0
                 scoped_excludes = [p for p in rsync_excludes if p not in ("pkg/*/edr", "pkg/*/edr/**")]
                 scoped_excludes.extend(["edr", "edr/**"])
                 for pkg_id in selected_pkg_ids:
                     src_pkg = os.path.join(dest_state, "pkg", pkg_id)
-                    if not os.path.isdir(src_pkg):
-                        ui.log("[export_pkgstore] skip push (pkg missing): %s" % pkg_id)
-                        continue
                     remote_pkg = "%s/pkg/%s" % (remote_state, pkg_id)
+                    if not os.path.isdir(src_pkg):
+                        # In pkg-scope mode, a missing local pkg means it was removed from source state.
+                        # Remove the remote pkg folder to mirror delete-pkg behavior.
+                        subprocess.check_call(["ssh", args.push, "rm", "-rf", remote_pkg])
+                        removed_missing_pkg_count += 1
+                        ui.log("[export_pkgstore] removed remote pkg (missing local): %s" % remote_pkg)
+                        continue
                     subprocess.check_call(["ssh", args.push, "mkdir", "-p", remote_pkg])
                     target = "%s:%s" % (args.push, remote_pkg)
                     rsync_cmd = _build_rsync_cmd(src_pkg, target, scoped_excludes, identity=args.identity)
@@ -614,7 +641,23 @@ def main(argv=None):
                     rsync_summary["transferred_files"] += int(part.get("transferred_files") or 0)
                     rsync_summary["deleted"] += int(part.get("deleted") or 0)
                     rsync_summary["warnings"].extend(part.get("warnings") or [])
-                ui.log("[export_pkgstore] rsync pkg-scope pushed=%d requested=%d" % (pushed_count, len(selected_pkg_ids)))
+                for fname in _SHARED_STATE_FILES:
+                    src_file = os.path.join(dest_state, fname)
+                    if not os.path.isfile(src_file):
+                        continue
+                    remote_file = "%s/%s" % (remote_state, fname)
+                    target = "%s:%s" % (args.push, remote_file)
+                    rsync_cmd = _build_rsync_file_cmd(src_file, target, identity=args.identity)
+                    ui.log("[export_pkgstore] rsync state file %s -> %s" % (fname, remote_file))
+                    part = _run_rsync_with_progress(rsync_cmd, verbose=verbose, ui=ui)
+                    rsync_summary["total_files"] += int(part.get("total_files") or 0)
+                    rsync_summary["transferred_files"] += int(part.get("transferred_files") or 0)
+                    rsync_summary["deleted"] += int(part.get("deleted") or 0)
+                    rsync_summary["warnings"].extend(part.get("warnings") or [])
+                ui.log(
+                    "[export_pkgstore] rsync pkg-scope pushed=%d requested=%d removed_missing=%d"
+                    % (pushed_count, len(selected_pkg_ids), removed_missing_pkg_count)
+                )
             else:
                 src_dir = dest_state.rstrip("/") + "/"
                 target = "%s:%s" % (args.push, remote_state)

@@ -3,13 +3,17 @@ from __future__ import print_function
 
 import os
 import sys
+import io
+import time
+import hashlib
+from contextlib import redirect_stdout
 
 try:
     import argparse
 except Exception:
     argparse = None
 
-from . import config, snapshot, release, watch, __version__
+from . import config, snapshot, release, watch, detection, __version__
 
 
 def _add_make_config(sub):
@@ -35,7 +39,7 @@ def _add_install(sub):
 
 def _add_snapshot(sub):
     p = sub.add_parser(
-        "snapshot", help="take a snapshot (baseline update after install)"
+        "snapshot", help="take a standalone snapshot (does not modify baseline)"
     )
     p.add_argument(
         "--config",
@@ -53,6 +57,41 @@ def _add_actions(sub):
         help="args passed to the action (everything after the name)",
     )
     p.set_defaults(func=_handle_actions)
+
+
+def _add_detect(sub):
+    p = sub.add_parser("detect", help="detect unmanaged or not-yet-updated changes")
+    p.add_argument(
+        "--config",
+        default=None,
+        help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
+    )
+    p.set_defaults(func=_handle_detect)
+
+
+def _add_telegram(sub):
+    p = sub.add_parser("telegram", help="telegram registration/approval helpers")
+    p.add_argument(
+        "--config",
+        default=None,
+        help="config file path (default: auto-discover under %s)" % config.BASE_DIR,
+    )
+    tsp = p.add_subparsers(dest="telegram_cmd")
+
+    p_poll = tsp.add_parser("poll", help="poll telegram bot updates and process registration commands")
+    p_poll.add_argument("--once", action="store_true", help="process one poll cycle then exit")
+    p_poll.set_defaults(func=_handle_telegram_poll)
+
+    p_list = tsp.add_parser("list", help="show approved/pending telegram subscribers")
+    p_list.set_defaults(func=_handle_telegram_list)
+
+    p_ap = tsp.add_parser("approve", help="approve pending subscriber")
+    p_ap.add_argument("chat_id", help="target chat id")
+    p_ap.set_defaults(func=_handle_telegram_approve)
+
+    p_rj = tsp.add_parser("reject", help="reject pending subscriber")
+    p_rj.add_argument("chat_id", help="target chat id")
+    p_rj.set_defaults(func=_handle_telegram_reject)
 
 
 def _add_create_pkg(sub):
@@ -204,11 +243,15 @@ def build_parser():
 
     _add_make_config(sub)
     _add_install(sub)
+    _add_snapshot(sub)
     _add_create_pkg(sub)
     _add_update_pkg(sub)
     _add_close_pkg(sub)
     _add_delete_pkg(sub)
+    _add_watch(sub)
     _add_actions(sub)
+    _add_detect(sub)
+    _add_telegram(sub)
     return parser
 
 
@@ -250,6 +293,7 @@ def _handle_create_pkg(args):
     cfg = config.load_main(args.config)
     release.create_pkg(cfg, args.pkg_id)
     _run_auto_actions(cfg, "create_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "create_pkg"})
+    watch.notify_lifecycle_event(cfg, "create_pkg", pkg_id=args.pkg_id)
     return 0
 
 def _handle_update_pkg(args):
@@ -306,6 +350,12 @@ def _handle_update_pkg(args):
             config_path=args.config,
             context={"pkg_id": args.pkg_id, "event": "cancel_pkg_release", "release": args.cancel},
         )
+        watch.notify_lifecycle_event(
+            cfg,
+            "cancel_pkg_release",
+            pkg_id=args.pkg_id,
+            details={"release": args.cancel, "root": args.root or "all"},
+        )
         return 0
     if args.release:
         active_roots = release.list_active_release_roots(cfg, args.pkg_id)
@@ -330,9 +380,13 @@ def _handle_update_pkg(args):
                     return 0
         release.finalize_pkg_release(cfg, args.pkg_id, roots=roots)
         _run_auto_actions(cfg, "update_pkg_release", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "update_pkg_release"})
+        watch.notify_lifecycle_event(
+            cfg, "update_pkg_release", pkg_id=args.pkg_id, details={"roots": ",".join(roots)}
+        )
         return 0
     release.update_pkg(cfg, args.pkg_id)
     _run_auto_actions(cfg, "update_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "update_pkg"})
+    watch.notify_lifecycle_event(cfg, "update_pkg", pkg_id=args.pkg_id)
     return 0
 
 
@@ -340,6 +394,7 @@ def _handle_close_pkg(args):
     cfg = config.load_main(args.config)
     release.close_pkg(cfg, args.pkg_id)
     _run_auto_actions(cfg, "close_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "close_pkg"})
+    watch.notify_lifecycle_event(cfg, "close_pkg", pkg_id=args.pkg_id)
     return 0
 
 
@@ -347,6 +402,7 @@ def _handle_delete_pkg(args):
     cfg = config.load_main(args.config)
     release.delete_pkg(cfg, args.pkg_id)
     _run_auto_actions(cfg, "delete_pkg", config_path=args.config, context={"pkg_id": args.pkg_id, "event": "delete_pkg"})
+    watch.notify_lifecycle_event(cfg, "delete_pkg", pkg_id=args.pkg_id)
     return 0
 
 
@@ -381,6 +437,70 @@ def _handle_actions(args):
         cfg, [args.name], extra_args=args.action_args, config_path=args.config
     )
     return 0
+
+
+def _handle_detect(args):
+    cfg = config.load_main(args.config)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result = detection.run(cfg)
+    text = buf.getvalue()
+    if text:
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+    _save_detect_report(cfg, text)
+    return int(result.get("exit_code", 0))
+
+
+def _handle_telegram_poll(args):
+    cfg = config.load_main(args.config)
+    return watch.telegram_poll(cfg, run_once=bool(args.once))
+
+
+def _handle_telegram_list(args):
+    cfg = config.load_main(args.config)
+    return watch.telegram_list(cfg)
+
+
+def _handle_telegram_approve(args):
+    cfg = config.load_main(args.config)
+    return watch.telegram_approve(cfg, args.chat_id)
+
+
+def _handle_telegram_reject(args):
+    cfg = config.load_main(args.config)
+    return watch.telegram_reject(cfg, args.chat_id)
+
+
+def _save_detect_report(cfg, text):
+    detection_cfg = cfg.get("detection") if isinstance(cfg.get("detection"), dict) else {}
+    report_path = detection_cfg.get("report_file")
+    if not report_path:
+        return
+    out_path = os.path.abspath(os.path.expanduser(str(report_path)))
+    parent = os.path.dirname(out_path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent)
+    existing = None
+    if os.path.isfile(out_path):
+        try:
+            with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                existing = f.read()
+        except Exception:
+            existing = None
+    if existing == text:
+        return
+    if existing is not None:
+        ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        backup_path = out_path + ".bak_" + ts
+        with open(backup_path, "w", encoding="utf-8") as bf:
+            bf.write(existing)
+        digest = hashlib.sha256(existing.encode("utf-8")).hexdigest()[:12]
+        print("[detect] backup saved: %s (sha256=%s)" % (backup_path, digest))
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text or "")
+    print("[detect] report saved: %s" % out_path)
 
 
 def _run_auto_actions(cfg, event, config_path=None, context=None):

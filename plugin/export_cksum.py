@@ -98,6 +98,15 @@ def _cksum(path):
     return parts[0], parts[1], " ".join(parts[2:])
 
 
+def _file_date(path):
+    try:
+        ts = os.path.getmtime(path)
+    except Exception as e:
+        print("[export_cksum] mtime read failed: %s (%s)" % (path, str(e)))
+        return ""
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
 def _normalize_excel_template(excel_arg, pkg_dir):
     path_template = excel_arg
     if os.sep not in path_template:
@@ -169,43 +178,46 @@ def _border(left=None, right=None, top=None, bottom=None):
 def _init_sheet(ws, sheet_name, release_path, ensure_format):
     if ensure_format:
         styles = _default_styles()
-        ws.merge_cells("B2:E2")
-        ws.merge_cells("B3:E3")
-        if "B4:C4" not in ws.merged_cells:
-            ws.merge_cells("B4:C4")
-        for col in range(2, 6):
+        ws.merge_cells("B2:F2")
+        ws.merge_cells("B3:F3")
+        if "C4:D4" not in ws.merged_cells:
+            ws.merge_cells("C4:D4")
+        for col in range(2, 7):
             cell = ws.cell(row=2, column=col)
             cell.fill = styles["header_fill"]
             cell.font = styles["bold_font"]
             cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = _border(styles["medium"], styles["medium"], styles["medium"], styles["medium"])
-        for col in range(2, 6):
+            left = styles["medium"] if col == 2 else styles["hair"]
+            right = styles["medium"] if col == 6 else styles["hair"]
+            cell.border = _border(left, right, styles["medium"], styles["medium"])
+        for col in range(2, 7):
             cell = ws.cell(row=3, column=col)
             cell.fill = styles["sub_fill"]
             cell.font = styles["base_font"]
             cell.alignment = Alignment(horizontal="center", vertical="center")
             left = styles["medium"] if col == 2 else styles["hair"]
-            right = styles["medium"] if col == 5 else styles["hair"]
+            right = styles["medium"] if col == 6 else styles["hair"]
             cell.border = _border(left, right, styles["medium"], styles["hair"])
-        for col in range(2, 6):
+        for col in range(2, 7):
             cell = ws.cell(row=4, column=col)
             cell.fill = styles["sub_fill"]
             cell.font = styles["base_font"]
             cell.alignment = Alignment(horizontal="center", vertical="center")
             left = styles["medium"] if col == 2 else styles["hair"]
-            right = styles["medium"] if col == 5 else styles["hair"]
+            right = styles["medium"] if col == 6 else styles["hair"]
             cell.border = _border(left, right, styles["hair"], styles["hair"])
         ws.row_dimensions[2].height = 17.25
         ws.column_dimensions["B"].width = 16.75
         ws.column_dimensions["C"].width = 12.75
-        ws.column_dimensions["D"].width = 45.875
-        ws.column_dimensions["E"].width = 12.75
+        ws.column_dimensions["D"].width = 12.75
+        ws.column_dimensions["E"].width = 45.875
         ws.column_dimensions["F"].width = 13.0
     ws.cell(row=2, column=2, value=sheet_name)
     ws.cell(row=3, column=2, value=release_path)
-    ws.cell(row=4, column=2, value="Check Sum")
-    ws.cell(row=4, column=4, value="File Name")
-    ws.cell(row=4, column=5, value="비고")
+    ws.cell(row=4, column=2, value="Date")
+    ws.cell(row=4, column=3, value="Check Sum")
+    ws.cell(row=4, column=5, value="File Name")
+    ws.cell(row=4, column=6, value="비고")
 
 
 def _apply_table_border(ws, start_row, end_row, ensure_format):
@@ -213,10 +225,10 @@ def _apply_table_border(ws, start_row, end_row, ensure_format):
         return
     styles = _default_styles()
     for row in range(start_row, end_row + 1):
-        for col in range(2, 6):
+        for col in range(2, 7):
             cell = ws.cell(row=row, column=col)
             left = styles["medium"] if col == 2 else styles["hair"]
-            right = styles["medium"] if col == 5 else styles["hair"]
+            right = styles["medium"] if col == 6 else styles["hair"]
             top = styles["hair"] if row >= 4 else None
             if row == end_row:
                 bottom = styles["medium"]
@@ -229,7 +241,13 @@ def _apply_table_border(ws, start_row, end_row, ensure_format):
 
 def _configure_page(ws, end_row, template_ws=None):
     if template_ws is not None:
-        ws.print_area = template_ws.print_area
+        template_print_area = str(template_ws.print_area or "")
+        if template_print_area and ":$F$" in template_print_area:
+            ws.print_area = template_print_area.replace(":$F$", ":$G$")
+        elif template_print_area:
+            ws.print_area = template_ws.print_area
+        else:
+            ws.print_area = "A1:G%d" % max(end_row, 5)
         ws.page_setup.orientation = template_ws.page_setup.orientation
         ws.page_setup.paperSize = template_ws.page_setup.paperSize
         ws.page_setup.fitToWidth = template_ws.page_setup.fitToWidth
@@ -239,7 +257,7 @@ def _configure_page(ws, end_row, template_ws=None):
         ws.sheet_view.zoomScaleNormal = template_ws.sheet_view.zoomScaleNormal
         ws.sheet_view.showGridLines = template_ws.sheet_view.showGridLines
         return
-    ws.print_area = "A1:F%d" % max(end_row, 5)
+    ws.print_area = "A1:G%d" % max(end_row, 5)
     ws.page_setup.orientation = "portrait"
     ws.page_setup.paperSize = 9
     ws.page_setup.fitToWidth = 1
@@ -262,34 +280,37 @@ def _copy_style(src, dest):
 
 def _write_sheet(ws, rows, ensure_format, template_ws=None):
     if ws.max_row >= 5:
-        for row in ws.iter_rows(min_row=5, max_row=ws.max_row, min_col=2, max_col=5):
+        for row in ws.iter_rows(min_row=5, max_row=ws.max_row, min_col=2, max_col=7):
             for cell in row:
                 cell.value = None
     style_row = 5 if ws.max_row >= 5 else None
     style_cells = {}
     if style_row:
-        for col in range(2, 6):
+        for col in range(2, 7):
             style_cells[col] = ws.cell(row=style_row, column=col)
     template_height = None
     if template_ws is not None:
         template_height = template_ws.row_dimensions[5].height
     styles = _default_styles() if ensure_format else None
-    for idx, (cksum, size, path) in enumerate(rows, 5):
-        b = ws.cell(row=idx, column=2, value=cksum)
-        c = ws.cell(row=idx, column=3, value=size)
-        d = ws.cell(row=idx, column=4, value=path)
-        e = ws.cell(row=idx, column=5, value="")
+    for idx, (date, cksum, size, path) in enumerate(rows, 5):
+        b = ws.cell(row=idx, column=2, value=date)
+        c = ws.cell(row=idx, column=3, value=cksum)
+        d = ws.cell(row=idx, column=4, value=size)
+        e = ws.cell(row=idx, column=5, value=path)
+        f = ws.cell(row=idx, column=6, value="")
         if style_cells:
             _copy_style(style_cells[2], b)
             _copy_style(style_cells[3], c)
             _copy_style(style_cells[4], d)
             _copy_style(style_cells[5], e)
+            _copy_style(style_cells[6], f)
         if ensure_format and styles:
             b.border = _border(styles["medium"], styles["hair"], styles["hair"], None)
             c.border = _border(styles["hair"], styles["hair"], styles["hair"], None)
             d.border = _border(styles["hair"], styles["hair"], styles["hair"], None)
-            e.border = _border(styles["hair"], styles["medium"], styles["hair"], None)
-            for cell in (b, c, d, e):
+            e.border = _border(styles["hair"], styles["hair"], styles["hair"], None)
+            f.border = _border(styles["hair"], styles["medium"], styles["hair"], None)
+            for cell in (b, c, d, e, f):
                 cell.font = styles["base_font"]
                 cell.alignment = Alignment(vertical="center")
         if template_height is not None:
@@ -298,7 +319,7 @@ def _write_sheet(ws, rows, ensure_format, template_ws=None):
     _apply_table_border(ws, 4, end_row, ensure_format)
     if ensure_format:
         blank_row = end_row + 1
-        for col in range(2, 6):
+        for col in range(2, 8):
             cell = ws.cell(row=blank_row, column=col)
             cell.value = None
             cell.border = Border()
@@ -370,8 +391,9 @@ def main(argv=None):
             cksum_row = _cksum(path)
             if not cksum_row:
                 continue
-            rows.append((cksum_row[0], cksum_row[1], relpath))
-        rows.sort(key=lambda r: r[2])
+            file_date = _file_date(path)
+            rows.append((file_date, cksum_row[0], cksum_row[1], relpath))
+        rows.sort(key=lambda r: r[3])
 
         ensure_format = not template_available
         if root in wb.sheetnames:

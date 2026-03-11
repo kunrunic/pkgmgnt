@@ -411,6 +411,15 @@ def _git_show_name_status(repo_root, commit_hash):
                 }
             )
             continue
+        if status.startswith("C") and len(parts) >= 3:
+            rows.append(
+                {
+                    "status": "C",
+                    "path": parts[2].strip(),
+                    "old_path": parts[1].strip(),
+                }
+            )
+            continue
         rows.append(
             {
                 "status": status[:1],
@@ -764,7 +773,7 @@ def _build_file_spans(ordered_commits, repo_root, files_by_commit):
                     "path": path or old_path,
                     "old_path": old_path,
                     "status": status,
-                    "introduced_by_add": status == "A",
+                    "introduced_by_add": status in ("A", "C"),
                     "start_commit": parent_commit,
                     "end_commit": commit_hash,
                 }
@@ -890,6 +899,16 @@ def main(argv=None):
         introduced_by_add = bool(item.get("introduced_by_add"))
         start_commit = item.get("start_commit")
         end_commit = item.get("end_commit")
+
+        # Export only files that exist in HEAD.
+        # Requirement: files deleted in final state must not be in review doc.
+        if path and not _git_file_exists(repo_root, "HEAD", path):
+            skipped += 1
+            skipped_paths.append(path)
+            progress.step("skip=%d render=%d" % (skipped, rendered))
+            if verbose_skip:
+                progress.log("[export_source_review] skip (deleted in HEAD): %s" % path)
+            continue
 
         if path and _is_ignored(path, repo_root, ignore_patterns):
             skipped += 1

@@ -5,6 +5,7 @@ pkgmgr/__init__.py
 pkgmgr/__main__.py
 pkgmgr/cli.py
 pkgmgr/config.py
+pkgmgr/detection.py
 pkgmgr/points.py
 pkgmgr/release.py
 pkgmgr/shell_integration.py
@@ -25,9 +26,13 @@ pkgmgr_kunrunic.egg-info/top_level.txt
 plugin/export_cksum.py
 plugin/export_pkgstore.py
 plugin/export_source_review.py
+tests/test_cli_detect.py
 tests/test_cli_install.py
+tests/test_cli_telegram.py
 tests/test_config.py
+tests/test_detection.py
 tests/test_progress.py
 tests/test_release.py
 tests/test_snapshot.py
+tests/test_watch_notify.py
 tools/echo_args.py

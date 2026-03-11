@@ -64,6 +64,26 @@ def test_load_main_reads_yaml():
         assert data["pkg_release_root"] == "/tmp/release"
 
 
+def test_load_pkg_config_repairs_missing_comma_in_flow_list():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "pkg.yaml"
+        cfg_path.write_text(
+            "\n".join(
+                [
+                    "pkg:",
+                    "  id: R1",
+                    "  root: /tmp/R1",
+                    "  status: open",
+                    "include:",
+                    '  releases: ["A/bin" "A/lib"]',
+                ]
+            )
+            + "\n"
+        )
+        data = config.load_pkg_config(cfg_path)
+        assert data["include"]["releases"] == ["A/bin", "A/lib"]
+
+
 def test_write_template_respects_overridden_default_path(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "pkgmgr.yaml"
@@ -109,6 +129,127 @@ def test_load_main_applies_defaults_and_validation():
         assert data["watch"]["interval_sec"] == 60  # reset to default on invalid
         assert data["collectors"]["enabled"] == ["checksums"]
         assert data["actions"] == {}
+        assert data["detection"]["system"] is None
+
+
+def test_load_main_accepts_detection_system():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "pkgmgr.yaml"
+        cfg_path.write_text(
+            "\n".join(
+                [
+                    "pkg_release_root: /tmp/release",
+                    "sources: []",
+                    "detection:",
+                    "  system: OCS2_DEV01",
+                ]
+            )
+            + "\n"
+        )
+
+        data = config.load_main(path=cfg_path, allow_interactive=False)
+        assert data["detection"]["system"] == "OCS2_DEV01"
+        assert data["detection"]["report_file"] is not None
+
+
+def test_load_main_accepts_telegram_chat_ids():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "pkgmgr.yaml"
+        cfg_path.write_text(
+            "\n".join(
+                [
+                    "pkg_release_root: /tmp/release",
+                    "sources: []",
+                    "watch:",
+                    "  telegram:",
+                    "    enabled: true",
+                    "    bot_token: t",
+                    "    chat_id: c1",
+                    "    chat_ids: [c2, c3]",
+                ]
+            )
+            + "\n"
+        )
+
+        data = config.load_main(path=cfg_path, allow_interactive=False)
+        assert data["watch"]["telegram"]["chat_ids"] == ["c2", "c3", "c1"]
+
+
+def test_load_main_accepts_jenkins_notify_on_first_seen():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "pkgmgr.yaml"
+        cfg_path.write_text(
+            "\n".join(
+                [
+                    "pkg_release_root: /tmp/release",
+                    "sources: []",
+                    "watch:",
+                    "  telegram:",
+                    "    channels:",
+                    "      jenkins:",
+                    "        enabled: true",
+                    "        notify_on_first_seen: true",
+                    "        jobs:",
+                    "          - name: test",
+                    "            url: http://localhost/job/test/",
+                ]
+            )
+            + "\n"
+        )
+
+        data = config.load_main(path=cfg_path, allow_interactive=False)
+        assert data["watch"]["telegram"]["channels"]["jenkins"]["notify_on_first_seen"] is True
+
+
+def test_load_main_accepts_telegram_subscribers_and_admin_fields():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "pkgmgr.yaml"
+        cfg_path.write_text(
+            "\n".join(
+                [
+                    "pkg_release_root: /tmp/release",
+                    "sources: []",
+                    "watch:",
+                    "  telegram:",
+                    "    subscribers_file: /tmp/telegram-subscribers.yaml",
+                    "    admin_chat_ids: [100, 200]",
+                    "    registration:",
+                    "      enabled: true",
+                    "      auto_reply: false",
+                    "      notify_admin_on_start: false",
+                ]
+            )
+            + "\n"
+        )
+        data = config.load_main(path=cfg_path, allow_interactive=False)
+        tcfg = data["watch"]["telegram"]
+        assert tcfg["subscribers_file"] == "/tmp/telegram-subscribers.yaml"
+        assert tcfg["admin_chat_ids"] == ["100", "200"]
+        assert tcfg["registration"]["enabled"] is True
+        assert tcfg["registration"]["auto_reply"] is False
+        assert tcfg["registration"]["notify_admin_on_start"] is False
+
+
+def test_load_main_accepts_telegram_tls_fields():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "pkgmgr.yaml"
+        cfg_path.write_text(
+            "\n".join(
+                [
+                    "pkg_release_root: /tmp/release",
+                    "sources: []",
+                    "watch:",
+                    "  telegram:",
+                    "    tls_verify: false",
+                    "    ca_file: /etc/ssl/certs/company-ca.pem",
+                ]
+            )
+            + "\n"
+        )
+        data = config.load_main(path=cfg_path, allow_interactive=False)
+        tcfg = data["watch"]["telegram"]
+        assert tcfg["tls_verify"] is False
+        assert tcfg["ca_file"] == "/etc/ssl/certs/company-ca.pem"
 
 
 def test_load_main_requires_pkg_release_root():

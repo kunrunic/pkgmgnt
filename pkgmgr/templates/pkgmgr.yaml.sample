@@ -33,6 +33,53 @@ artifacts:
 watch:
   interval_sec: 60
   on_change: []   # 변경 발생 시 실행할 action 이름 리스트
+  detect: true
+  telegram:
+    enabled: false
+    bot_token: ""
+    tls_verify: true      # 사내 SSL 프록시 사용 시 false 또는 ca_file 지정
+    ca_file: null         # 사설 CA 번들 경로 (예: /etc/ssl/certs/company-ca.pem)
+    subscribers_file: ~/pkgmgr/config/telegram-subscribers.yaml  # 승인된 수신자 별도 저장소
+    admin_chat_ids: []    # /approve, /reject 권한자 chat id 목록
+    chat_id: ""           # fallback only (read-only compatibility)
+    chat_ids: []          # fallback only (read-only compatibility)
+    message_prefix: "[pkgmgr]"
+    notify_on: [fail, warn]
+    dedup: true
+    registration:
+      enabled: true
+      auto_reply: true
+      notify_admin_on_start: true
+    channels:
+      detect:
+        enabled: true
+        message_file: null   # 지정 시 이 파일 본문을 detect 텔레그램 메시지로 그대로 전송
+        max_chars: 3800      # 본문 길이 제한(초과분은 자동 생략)
+        wrap_width: 72       # 텔레그램 가로폭에 맞춰 줄바꿈
+        message_file_max_lines: 120  # detect 파일에서 보낼 최대 라인 수(summary/by_reason 위주)
+      lifecycle:
+        enabled: false
+        events: [create_pkg, update_pkg, update_pkg_release, cancel_pkg_release, close_pkg, delete_pkg]
+      git:
+        enabled: false
+        repo_root: null
+        branches: []
+      jenkins:
+        enabled: false
+        notify_on: [started, failed, success]
+        notify_on_first_seen: false
+        jobs:
+          # - name: "aocs-build"
+          #   url: "https://jenkins.example.com/job/aocs-build"
+          #   user: "jenkins-user"
+          #   api_token: "jenkins-api-token"
+      file_watch:
+        enabled: false
+        max_chars: 3000
+        files:
+          # - /path/to/alert.txt
+          # - path: /path/to/status.json
+          #   encoding: utf-8
 
 collectors:
   enabled: ["checksums"]
@@ -61,3 +108,11 @@ auto_actions:
   cancel_pkg_release: []
   delete_pkg: []
   close_pkg: []
+
+detection:
+  enabled: true
+  system: null   # 장비/시스템 식별자(예: OCS2_DEV01)
+  report_file: ~/pkgmgr/local/state/detect/detect-report.txt  # detect 결과 저장(내용 변경 시 자동 백업)
+  ignore: []
+  fail_on: [TRACKED_CHANGED_NOT_IN_PKG, UNTRACKED_NOT_IN_PKG, AMBIGUOUS_PKG]
+  warn_on: [CHANGED_NOT_UPDATED, DELETED_NOT_UPDATED]
