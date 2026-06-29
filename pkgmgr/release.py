@@ -53,11 +53,7 @@ def _load_pkg_state(pkg_id):
     path = _pkg_state_path(pkg_id)
     if not os.path.exists(path):
         return None
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    return _read_json_path(path)
 
 
 def _write_pkg_state(pkg_id, status, extra=None):
@@ -79,7 +75,7 @@ def _write_pkg_state(pkg_id, status, extra=None):
         state["closed_at"] = now
     if extra:
         state.update(extra)
-    with open(_pkg_state_path(pkg_id), "w") as f:
+    with open(_pkg_state_path(pkg_id), "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
     return state
 
@@ -97,7 +93,7 @@ def _touch_pkg_state_updated(pkg_id, updated_at=None):
     state_dir = _pkg_state_dir(pkg_id)
     if not os.path.exists(state_dir):
         os.makedirs(state_dir)
-    with open(_pkg_state_path(pkg_id), "w") as f:
+    with open(_pkg_state_path(pkg_id), "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
     return state
 
@@ -117,13 +113,9 @@ def _load_pkg_summary():
     path = _pkg_summary_path()
     if not os.path.exists(path):
         return {"generated_at": _timestamp(), "pkgs": []}
-    try:
-        with open(path, "r") as f:
-            data = json.load(f)
-        if isinstance(data, dict) and isinstance(data.get("pkgs"), list):
-            return data
-    except Exception:
-        pass
+    data = _read_json_path(path)
+    if isinstance(data, dict) and isinstance(data.get("pkgs"), list):
+        return data
     return {"generated_at": _timestamp(), "pkgs": []}
 
 
@@ -144,7 +136,7 @@ def _remove_pkg_summary_entry(pkg_id):
     path = _pkg_summary_path()
     if not os.path.exists(os.path.dirname(path)):
         os.makedirs(os.path.dirname(path))
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
@@ -170,11 +162,7 @@ def _build_pkg_summary_entry(pkg_id):
     update_path, update_ts = _find_latest_update(pkg_id)
     update_data = {}
     if update_path:
-        try:
-            with open(update_path, "r") as f:
-                update_data = json.load(f) or {}
-        except Exception:
-            update_data = {}
+        update_data = _read_json_path(update_path) or {}
     git_info = update_data.get("git") or {}
     release_info = update_data.get("release") or []
     checksums = update_data.get("checksums") or {}
@@ -226,7 +214,7 @@ def _update_pkg_summary(pkg_id):
     path = _pkg_summary_path()
     if not os.path.exists(os.path.dirname(path)):
         os.makedirs(os.path.dirname(path))
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
@@ -243,7 +231,7 @@ def _write_release_history(pkg_id, run_at, bundles):
         "bundles": bundles,
     }
     out_path = os.path.join(rel_dir, "release-%s.json" % run_at)
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
     return out_path
 
@@ -558,25 +546,35 @@ def _decode_git_output(raw, encodings):
         encodings = []
     candidates = [e for e in encodings if e]
     candidates.extend(["utf-8", "euc-kr", "cp949"])
-    best_text = None
-    best_score = None
-    for enc in candidates:
-        try:
-            text = raw.decode(enc, errors="replace")
-        except Exception:
-            continue
-        score = text.count(u"\ufffd")
-        if best_score is None or score < best_score:
-            best_score = score
-            best_text = text
-        if score == 0:
-            break
-    if best_text is not None:
-        return best_text
-    try:
-        return raw.decode("utf-8", errors="replace")
-    except Exception:
-        return str(raw)
+
+    def _best_decode(buf):
+        best_text = None
+        best_score = None
+        for enc in candidates:
+            try:
+                text = buf.decode(enc, errors="replace")
+            except Exception:
+                continue
+            score = text.count(u"\ufffd")
+            if best_score is None or score < best_score:
+                best_score = score
+                best_text = text
+            if score == 0:
+                break
+        if best_text is None:
+            best_text = buf.decode("utf-8", errors="replace")
+            best_score = best_text.count(u"\ufffd")
+        return best_text, best_score
+
+    text, score = _best_decode(raw)
+    if score == 0:
+        return text
+    # The buffer did not decode cleanly under a single encoding. This happens
+    # when `git log` combines multiple commits whose messages were authored in
+    # different encodings (e.g. some UTF-8, some EUC-KR). Decode line by line so
+    # one mismatched line cannot corrupt the rest of the output.
+    lines = [_best_decode(chunk)[0] for chunk in raw.split(b"\n")]
+    return u"\n".join(lines)
 
 
 def _git_output_encoding(repo_root):
@@ -806,7 +804,7 @@ def _update_release_history_note(pkg_id, root_name, release_name, note_text):
                 updated = True
         if updated:
             payload["generated_at"] = _timestamp()
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
             return True
     return False
@@ -1331,7 +1329,7 @@ def _remove_release_history_entries(pkg_id, release_name, roots):
             if kept:
                 payload["bundles"] = kept
                 payload["generated_at"] = _timestamp()
-                with open(path, "w") as f:
+                with open(path, "w", encoding="utf-8") as f:
                     json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
             else:
                 os.remove(path)
@@ -1533,7 +1531,7 @@ def update_pkg(cfg, pkg_id):
     }
 
     out_path = os.path.join(updates_dir, "update-%s.json" % ts)
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
     print("[update-pkg] wrote %s" % out_path)
     _touch_pkg_state_updated(pkg_id)

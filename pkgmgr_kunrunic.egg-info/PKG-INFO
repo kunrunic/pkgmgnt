@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: pkgmgr-kunrunic
-Version: 0.1.2.dev2
+Version: 0.1.2.dev4
 Summary: Package management workflow scaffold.
 Author: pkgmgr maintainers
 License: MIT License
@@ -50,6 +50,8 @@ Requires-Dist: openpyxl<3.2,>=3.0; python_version < "3.8"
 Requires-Dist: openpyxl>=3.1; python_version >= "3.8"
 Requires-Dist: python-docx<1.0,>=0.8.11; python_version < "3.8"
 Requires-Dist: python-docx>=1.1; python_version >= "3.8"
+Requires-Dist: rich<13,>=10; python_version < "3.7"
+Requires-Dist: rich>=13.7; python_version >= "3.7"
 Dynamic: license-file
 
 # pkgmgr
@@ -85,7 +87,7 @@ Dynamic: license-file
 pkgmgr make-config
 pkgmgr make-config -o ~/pkgmgr/config/pkgmgr-alt.yaml  # 위치 지정 가능
 ```
-편집할 주요 필드: `pkg_release_root`, `sources`, `source.exclude`, `artifacts.targets/exclude`, `git.keywords/repo_root`, `collectors.enabled`, `actions`.
+편집할 주요 필드: `pkg_release_root`, `sources`, `source.exclude`, `artifacts.targets/exclude`, `git.repo_root/repo_url/keyword_prefix`, `collectors.enabled`, `actions`.
 
 ### 2) install — PATH/alias 등록 + 초기 baseline(한 번만)
 ```
@@ -94,12 +96,19 @@ pkgmgr install [--config <path>]
 - 사용 쉘을 감지해 rc 파일에 PATH/alias 추가.
 - `~/pkgmgr/local/state/baseline.json`이 없을 때만 초기 스냅샷 생성(있으면 건너뜀).
 
+### 2-1) snapshot — 현재 상태 스냅샷(기준선 변경 없음)
+```
+pkgmgr snapshot [--config <path>]
+```
+- `~/pkgmgr/local/state/snapshot.json`을 새로 생성합니다.
+- baseline(`baseline.json`)은 변경하지 않습니다.
+
 ### 3) create-pkg — 패키지 디렉터리/설정 생성
 ```
 pkgmgr create-pkg <pkg-id> [--config <path>]
 ```
 - `<pkg_release_root>/<pkg-id>/pkg.yaml`을 실제 값으로 채워 생성(기존 파일이 있으면 덮어쓰기 여부 확인).
-- 메인 설정의 `git.keywords/repo_root`, `collectors.enabled`를 기본값으로 반영.
+- 메인 설정의 `git.repo_root`, `collectors.enabled`를 기본값으로 반영(`git.keywords`는 `pkg.yaml`에서 직접 입력).
 - baseline이 없는 경우에만 baseline 생성.
 
 ### 4) update-pkg — Git/체크섬 수집 + 릴리스 번들 생성
@@ -122,6 +131,99 @@ pkgmgr --config <path> actions <name> [args...]
 - 예: `pkgmgr --config ~/pkgmgr/pkgmgr.yaml actions export_cksum --root R --time 4`
 - 예: `pkgmgr --config ~/pkgmgr/pkgmgr.yaml actions export_cksum --pkg-dir /path/to/pkg --excel /path/to/template.xlsx`
 
+### 6) detect — baseline 대비 변경 탐지
+```
+pkgmgr detect [--config <path>]
+```
+- `pkgmgr.yaml`의 `sources/artifacts`를 매번 재스캔해 `baseline.json`과 직접 비교(`added/modified/deleted`)합니다.
+- Git 변경은 보조 진단으로만 사용하며, 1차 판정 입력은 baseline 비교 결과입니다.
+- `snapshot.json`은 detect의 1차 비교 입력으로 사용하지 않습니다.
+- `detection.system`을 지정하면 detect 리포트/알림에 시스템명이 포함됩니다.
+- `detection.report_file` 경로에 detect 텍스트 리포트를 저장합니다. 내용이 바뀐 경우 기존 파일을 `*.bak_YYYYMMDD_HHMMSS`로 자동 백업합니다.
+- `pkgmgr.yaml` 관리 범위의 변경을 탐지하고, 파일별로 pkg 관리 대상 여부를 먼저 판정합니다.
+- 관리 대상이면 open pkg 반영 상태(`CHANGED_NOT_UPDATED`, `DELETED_NOT_UPDATED`, `TRACKED_CHANGED_NOT_IN_PKG`, `UNTRACKED_NOT_IN_PKG`, `AMBIGUOUS_PKG`)를 점검합니다.
+- 관리 비대상이면 `CHANGED_BUT_UNUSED_CHECK_REQUIRED`로 분류해 사용자 확인 대상으로 표시합니다.
+- 출력은 `managed_view` + `unmanaged_view` + `git_view`(`GIT_UNTRACKED`)로 구분됩니다.
+- `detection.fail_on`은 managed/unmanaged 상태코드에만 적용됩니다.
+- git 차이는 `warn_count`에만 반영되고 `fail`에는 영향이 없습니다.
+
+### 7) watch — 주기 감시 + detect + Telegram 알림(확장 채널)
+```
+pkgmgr watch [--config <path>] [--once] [--pkg <id>]
+```
+- `watch.interval_sec` 주기로 snapshot diff를 확인합니다.
+- `watch.detect=true`이면 매 tick에서 detection을 함께 수행합니다.
+- `watch.on_change`에 action을 지정하면 변화 감지 시 자동 실행합니다.
+- `watch.telegram.enabled=true`이면 감시/탐지 요약과 확장 이벤트를 Telegram으로 전송합니다.
+  - 필수: `watch.telegram.bot_token`
+  - TLS: `watch.telegram.tls_verify`(기본 true), `watch.telegram.ca_file`(사설 CA 번들 경로)
+  - 수신자 저장소: `watch.telegram.subscribers_file` (기본: `~/pkgmgr/config/telegram-subscribers.yaml`)
+  - 하위호환: `watch.telegram.chat_id/chat_ids`는 fallback(read-only) 수신자 설정으로만 사용
+  - 관리자: `watch.telegram.admin_chat_ids`에 `/approve`, `/reject` 권한 chat id 지정
+  - `watch.telegram.notify_on`: detect 채널 기본 규칙(`fail|warn|changes|all`)
+  - `watch.telegram.dedup=true`이면 동일 메시지 반복 전송을 방지합니다.
+  - `watch.telegram.channels.*`로 채널별 활성화/옵션을 설정합니다.
+    - `detect`: 기존 watch tick 결과 알림
+      - `watch.telegram.channels.detect.message_file` 지정 시, detect 결과 파일에서 `summary`, `*by_reason` 섹션만 발췌 전송
+      - `watch.telegram.channels.detect.max_chars` 길이 제한 초과분은 자동 생략
+      - `watch.telegram.channels.detect.wrap_width`로 텔레그램 가로폭 줄바꿈 폭 조정
+      - `watch.telegram.channels.detect.message_file_max_lines`로 발췌 라인 수 제한
+      - 기본 요약 메시지는 `run_at + system + exit/fail/warn + by_reason` 중심으로 전송
+    - `lifecycle`: `create_pkg/update_pkg/close_pkg/delete_pkg` 등 lifecycle 이벤트 알림
+    - `git`: 신규 커밋(HEAD 변경) 감지 알림
+    - `jenkins`: lastBuild 상태 변화(시작/성공/실패 등) 알림
+    - `file_watch`: 지정 파일 내용 변경 시 본문 알림(내용 hash 기반 중복 방지)
+
+### 8) telegram — 가입 승인 폴링/관리
+```
+pkgmgr telegram poll [--once] [--config <path>]
+pkgmgr telegram list [--config <path>]
+pkgmgr telegram approve <chat_id> [--config <path>]
+pkgmgr telegram reject <chat_id> [--config <path>]
+```
+- `/start` 수신 시 pending 등록 후 관리자에게 승인 요청 알림 전송.
+- 관리자(`/approve <chat_id>`, `/reject <chat_id>`, `/pending`) 처리 결과는 `subscribers_file`에만 반영.
+- `pkgmgr.yaml`은 자동 수정하지 않습니다(오염 방지).
+
+## auto_actions 가이드
+- `auto_actions`는 pkg 라이프사이클 이벤트 이후 자동으로 실행할 `actions` 이름 목록입니다.
+- 지원 이벤트:
+  - `create_pkg`
+  - `update_pkg`
+  - `update_pkg_release`
+  - `cancel_pkg_release`
+  - `delete_pkg`
+  - `close_pkg`
+- 실행 규칙:
+  - 각 이벤트의 배열 순서대로 실행됩니다.
+  - 각 action은 `actions.<name>`에 정의된 command 리스트를 순서대로 실행합니다.
+  - action 실행 시 `PKGMGR_CONFIG` 환경변수(현재 config 경로)가 자동 주입됩니다.
+- 권장 운영 패턴:
+  - `update_pkg_release`에서 `auto_cksum -> auto_pkgstore` 순으로 배치
+  - `close_pkg`/`delete_pkg`에서도 `auto_pkgstore`를 연결해 상태 반영 동기화
+- 예시:
+```yaml
+actions:
+  auto_cksum:
+    - cmd: python3 export_cksum.py --pkg-id {pkg_id} --excel cksum_{pkg_id}_{YYYYMMDD}_{version}
+      cwd: /app/pkgmgr/plugin
+      env:
+        PATH: "/usr/local/python3.6/bin:/usr/local/bin:/usr/bin:/bin"
+  auto_pkgstore:
+    - cmd: python3 export_pkgstore.py --system TEST --push xxx@xxx.xx.x.xx --remote-dest data/pkgstore --pkg-id {pkg_id}
+      cwd: /app/pkgmgr/plugin
+      env:
+        PATH: "/usr/local/python3.6/bin:/usr/local/bin:/usr/bin:/bin"
+
+auto_actions:
+  create_pkg: [auto_pkgstore]
+  update_pkg: [auto_pkgstore]
+  update_pkg_release: [auto_cksum, auto_pkgstore]
+  cancel_pkg_release: [auto_pkgstore]
+  delete_pkg: [auto_pkgstore]
+  close_pkg: [auto_pkgstore]
+```
+
 ## PATH/alias 자동 추가
 - PyPI/로컬 설치 후 `python -m pkgmgr.cli install`을 실행하면 현재 파이썬의 `bin` 경로(예: venv/bin, ~/.local/bin 등)를 감지해 사용 중인 쉘의 rc 파일에 PATH/alias를 추가합니다.
 - 지원 쉘: bash(`~/.bashrc`), zsh(`~/.zshrc`), csh/tcsh(`~/.cshrc`/`~/.tcshrc`), fish(`~/.config/fish/config.fish`).
@@ -136,9 +238,13 @@ pkgmgr --config <path> actions <name> [args...]
   - `sources`: 관리할 소스 경로 목록  
   - `source.exclude`: 소스 스캔 제외 패턴 (glob 지원)  
   - `artifacts.targets` / `artifacts.exclude`: 배포 대상 포함/제외 규칙 (glob 지원: `tmp/**`, `*.bak`, `**/*.tmp` 등)  
-  - `watch.interval_sec`: 감시 폴링 주기(향후 노출 예정)  
-  - `watch.on_change`: 변경 시 실행할 action 이름 리스트(향후 노출 예정)  
-  - `collectors.enabled`: 기본 활성 컬렉터(향후 확장 예정)
+  - `watch.interval_sec`: 감시 폴링 주기
+  - `watch.on_change`: 변경 시 실행할 action 이름 리스트
+  - `watch.detect`: watch tick에서 detection 실행 여부
+  - `watch.telegram.*`: Telegram 알림 설정(`enabled`, `bot_token`, `subscribers_file`, `admin_chat_ids`, `registration`, `message_prefix`, `notify_on`, `dedup`, `channels`, `chat_id/chat_ids(fallback)`)
+  - `collectors.enabled`: 기본 활성 컬렉터(현재 collect 명령은 stub 기반)
+  - `detection.enabled/ignore/fail_on/warn_on`: detection 동작/정책 제어
+  - `detection.system`: detect 보고/알림에 포함할 시스템 식별자
   - `actions`: action 이름 → 실행할 커맨드 목록 (각 항목에 `cmd` 필수, `cwd`/`env` 선택)
 
 - `pkgmgr/templates/pkg.yaml.sample` : 패키지별 설정 샘플  
@@ -148,16 +254,18 @@ pkgmgr --config <path> actions <name> [args...]
   - `collectors.enabled`: 패키지별 컬렉터 설정
 
 ## 주의
-- 시스템 전체 관리(감시/수집/포인트) 기능은 아직 확장 단계입니다. 추후 단계적으로 구현/교체 예정입니다.
+- `snapshot`은 기준선을 바꾸지 않는 독립 상태 캡처입니다(`snapshot.json`).
+- `install`과 `create-pkg`는 동일한 `baseline.json`을 사용하며, baseline이 없을 때만 생성됩니다.
+- `detect`는 현재 정책 기반 분류/출력은 제공하지만, collector 고도화 및 watch 연동은 확장 단계입니다.
 
 ## 확장성 가이드
 - `actions`를 기본 확장 포인트로 사용합니다. 배포/내보내기/알림 등은 액션으로 위임하는 것을 권장합니다.
 - 릴리스 번들 포맷(`release/<root>/release.vX.Y.Z/`, `PKG_LIST`, `PKG_NOTE`)은 외부 도구와의 연동 기준점으로 사용합니다.
 - `~/pkgmgr/local/state/pkg/<id>/updates/update-<ts>.json`은 자동화 파이프라인에서 읽을 수 있는 결과물로 취급합니다.
-- 전역 수집/집계는 `collectors` 확장으로 흡수할 계획이며, CLI로 노출하기 전까지는 내부 확장용으로 유지합니다.
+- 전역 수집/집계는 `collectors` 확장으로 흡수할 계획입니다.
 
 ## TODO (우선순위)
-- 감시/포인트 고도화: watchdog/inotify 연동, diff 결과를 포인트 메타에 기록, 에러/로그 처리.
-- baseline/릴리스 알림: baseline 대비 변경 감지 시 알림/확인 흐름 추가(README/README.txt TODO 반영).
-- 컬렉터 파이프라인: 체크섬 외 collector 등록/선택/실행 로직, include 기준 실행, 정적/동적/EDR/AV 훅 자리 마련.
-- 테스트/CI: watch diff/포인트/라이프사이클 단위 테스트 추가, pytest/CI 스크립트 보강.
+- detection 출력 포맷 고도화: managed/unmanaged 분류 기준 튜닝, 정책 필터 옵션 추가.
+- 컬렉터 파이프라인 구현: 체크섬 외 collector 등록/선택/실행 로직 정식 연결.
+- watch 연동 고도화: detection 결과 기반 트리거/알림 흐름 정리.
+- 테스트/CI 확장: detection/watching/lifecycle 통합 테스트 보강.

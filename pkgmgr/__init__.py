@@ -11,6 +11,7 @@ __all__ = [
     "release",
     "watch",
     "points",
+    "detection",
 ]
 
-__version__ = "0.1.2.dev2"
+__version__ = "0.1.2.dev4"
